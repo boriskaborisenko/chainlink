@@ -43,6 +43,14 @@ function reasonLabel(reason: number): string {
   }
 }
 
+function shortAddress(address: string): string {
+  if (!address) {
+    return "-";
+  }
+
+  return `${address.slice(0, 8)}...${address.slice(-6)}`;
+}
+
 function makeContracts(runner: ethers.ContractRunner) {
   return {
     registry: new Contract(env.passRegistry, passRegistryAbi, runner),
@@ -343,98 +351,223 @@ export default function App() {
     }
   }
 
+  const expectedChainId = env.chainId || 0;
+  const networkMismatch = chainId > 0 && expectedChainId > 0 && chainId !== expectedChainId;
+  const verifyText = `${String(verify.ok)} (${reasonLabel(verify.reason)})`;
+  const hasRequest = requestId !== "-";
+  const hasSdkToken = sdkTokenPreview !== "-";
+
   return (
     <div className="page">
-      <header className="hero">
-        <h1>PassStore + Sumsub (No Backend)</h1>
+      <div className="mesh mesh-a" />
+      <div className="mesh mesh-b" />
+
+      <header className="panel hero reveal">
+        <div className="hero-row">
+          <p className="eyebrow">Trust Registry MVP</p>
+          <span className={`pill ${verify.ok ? "ok" : "warn"}`}>{verify.ok ? "Policy pass" : "Policy blocked"}</span>
+        </div>
+        <h1>
+          PassStore <span>+ Sumsub</span>
+        </h1>
         <p>
-          Frontend + Smart Contracts + Chainlink CRE only. SDK token delivery happens onchain in encrypted form.
+          No custom backend: encrypted SDK token packets onchain, CRE workers for issuance and status sync,
+          and policy-gated onchain apps.
         </p>
+        <div className="chip-row">
+          <span className="chip">React + Vite</span>
+          <span className="chip">Chainlink CRE</span>
+          <span className="chip">Sumsub WebSDK</span>
+          <span className="chip">No PII onchain</span>
+        </div>
       </header>
 
-      <section className="card">
-        <h2>User Flow</h2>
-        <div className="grid two">
-          <button onClick={connectWallet} disabled={busy}>
-            Connect wallet
-          </button>
-          <button onClick={() => refreshOnchainData()} disabled={busy || !account}>
-            Refresh status
-          </button>
-          <button onClick={enableEncryption} disabled={busy || !account}>
-            Enable encryption
-          </button>
-          <button onClick={startVerification} disabled={busy || !account || !encryptionReady}>
-            Start verification
-          </button>
-        </div>
-
-        <label>
-          Sumsub level
-          <input value={levelName} onChange={(e) => setLevelName(e.target.value)} />
-        </label>
-
-        <div className="meta">
-          <div>Account: {account || "-"}</div>
-          <div>Chain ID: {chainId || "-"}</div>
-          <div>Expected Chain ID: {env.chainId || "-"}</div>
-          <div>Encryption key set: {String(encryptionReady)}</div>
-          <div>Last requestId: {requestId}</div>
-          <div>SDK token: {sdkTokenPreview}</div>
-          <div>
-            verifyUser: {String(verify.ok)} ({reasonLabel(verify.reason)})
+      <div className="layout">
+        <section className="panel reveal">
+          <div className="section-head">
+            <h2>User Flow</h2>
+            <span className={`pill ${networkMismatch ? "warn" : "ok"}`}>
+              {networkMismatch ? `Wrong network (${chainId})` : `Chain ${chainId || "-"}`}
+            </span>
           </div>
-          <div>Status: {status}</div>
-        </div>
 
-        {error ? <div className="error">Error: {error}</div> : null}
-        <div id="sumsub-websdk-container" className="sumsub" />
-      </section>
+          <div className="flow-block">
+            <h3>Sequence</h3>
+            <div className="steps">
+              <article className={`step ${account && !networkMismatch ? "done" : account ? "warn" : "active"}`}>
+                <span className="step-index">1</span>
+                <div className="step-content">
+                  <p className="step-title">Connect wallet on chain {expectedChainId || "31337"}</p>
+                  <p className="step-note">Use Localhost 8545 / chainId 31337 for this demo.</p>
+                </div>
+                <span className="step-badge">{account ? (networkMismatch ? "wrong network" : "done") : "now"}</span>
+              </article>
 
-      <section className="card">
-        <h2>Demo Apps</h2>
-        <div className="grid two">
-          <button onClick={mintAccessPass} disabled={busy || !account}>
-            Mint AccessPass
-          </button>
-          <button onClick={claimDrop} disabled={busy || !account}>
-            Claim Drop
-          </button>
-        </div>
-        <div className="meta">
-          <div>AccessPass minted: {String(hasMinted)}</div>
-          <div>ClaimDrop claimed: {String(hasClaimed)}</div>
-        </div>
-      </section>
+              <article className={`step ${encryptionReady ? "done" : account ? "active" : "pending"}`}>
+                <span className="step-index">2</span>
+                <div className="step-content">
+                  <p className="step-title">Enable encryption key</p>
+                  <p className="step-note">Click Enable encryption to store your MetaMask public key onchain.</p>
+                </div>
+                <span className="step-badge">{encryptionReady ? "done" : account ? "now" : "pending"}</span>
+              </article>
 
-      <section className="card">
-        <h2>Attestation Snapshot</h2>
-        {attestation ? (
-          <div className="meta">
-            <div>Exists: {String(attestation.exists)}</div>
-            <div>Revoked: {String(attestation.revoked)}</div>
-            <div>Flags: {attestation.flags}</div>
-            <div>
-              Expiration: {attestation.expiration > 0 ? new Date(attestation.expiration * 1000).toISOString() : "-"}
+              <article className={`step ${hasSdkToken ? "done" : hasRequest ? "active" : "pending"}`}>
+                <span className="step-index">3</span>
+                <div className="step-content">
+                  <p className="step-title">Start KYC and fetch SDK token</p>
+                  <p className="step-note">Request session, wait CRE token packet, decrypt it in wallet.</p>
+                </div>
+                <span className="step-badge">{hasSdkToken ? "done" : hasRequest ? "waiting CRE" : "pending"}</span>
+              </article>
+
+              <article className={`step ${verify.ok ? "done" : hasSdkToken ? "active" : "pending"}`}>
+                <span className="step-index">4</span>
+                <div className="step-content">
+                  <p className="step-title">Complete Sumsub and wait sync</p>
+                  <p className="step-note">After GREEN, verifyUser becomes true and gated actions unlock.</p>
+                </div>
+                <span className="step-badge">{verify.ok ? "done" : hasSdkToken ? "waiting review" : "pending"}</span>
+              </article>
             </div>
-            <div>Risk score: {attestation.riskScore}</div>
-            <div>Subject type: {attestation.subjectType}</div>
           </div>
-        ) : (
-          <div>No attestation loaded yet.</div>
-        )}
-      </section>
 
-      <section className="card">
-        <h2>Admin (read-only)</h2>
-        <div className="meta">
-          <div>CRE issuer: {env.creIssuer ?? "not set"}</div>
-          <div>Issuer allowed in registry: {creIssuerAllowed === null ? "unknown" : String(creIssuerAllowed)}</div>
-          <div>Policy ID: {env.policyId.toString()}</div>
-          <div>Registry: {env.passRegistry}</div>
-          <div>Broker: {env.kycBroker}</div>
+          <div className="button-grid">
+            <button className="btn strong" onClick={connectWallet} disabled={busy}>
+              Connect wallet
+            </button>
+            <button className="btn" onClick={() => refreshOnchainData()} disabled={busy || !account}>
+              Refresh status
+            </button>
+            <button className="btn" onClick={enableEncryption} disabled={busy || !account}>
+              Enable encryption
+            </button>
+            <button className="btn strong" onClick={startVerification} disabled={busy || !account || !encryptionReady}>
+              Start verification
+            </button>
+          </div>
+
+          <label className="field">
+            <span>Sumsub level</span>
+            <input value={levelName} onChange={(e) => setLevelName(e.target.value)} />
+          </label>
+
+          <div className="kv-grid">
+            <div className="kv">
+              <span>Account</span>
+              <strong>{shortAddress(account)}</strong>
+            </div>
+            <div className="kv">
+              <span>Expected Chain</span>
+              <strong>{expectedChainId || "-"}</strong>
+            </div>
+            <div className="kv">
+              <span>Encryption</span>
+              <strong>{encryptionReady ? "Enabled" : "Missing"}</strong>
+            </div>
+            <div className="kv">
+              <span>Request ID</span>
+              <strong>{requestId}</strong>
+            </div>
+            <div className="kv">
+              <span>SDK token</span>
+              <strong>{sdkTokenPreview}</strong>
+            </div>
+            <div className="kv">
+              <span>verifyUser</span>
+              <strong>{verifyText}</strong>
+            </div>
+          </div>
+
+          <div className="status-box">Status: {status}</div>
+          {error ? <div className="error">Error: {error}</div> : null}
+          <div id="sumsub-websdk-container" className="sumsub" />
+        </section>
+
+        <div className="stack">
+          <section className="panel reveal delay-1">
+            <h2>Demo Apps</h2>
+            <div className="button-grid single">
+              <button className="btn strong" onClick={mintAccessPass} disabled={busy || !account}>
+                Mint AccessPass
+              </button>
+              <button className="btn" onClick={claimDrop} disabled={busy || !account}>
+                Claim Drop
+              </button>
+            </div>
+            <div className="kv-grid compact">
+              <div className="kv">
+                <span>AccessPass minted</span>
+                <strong>{String(hasMinted)}</strong>
+              </div>
+              <div className="kv">
+                <span>ClaimDrop claimed</span>
+                <strong>{String(hasClaimed)}</strong>
+              </div>
+            </div>
+          </section>
+
+          <section className="panel reveal delay-2">
+            <h2>Attestation Snapshot</h2>
+            {attestation ? (
+              <div className="kv-grid compact">
+                <div className="kv">
+                  <span>Exists</span>
+                  <strong>{String(attestation.exists)}</strong>
+                </div>
+                <div className="kv">
+                  <span>Revoked</span>
+                  <strong>{String(attestation.revoked)}</strong>
+                </div>
+                <div className="kv">
+                  <span>Flags</span>
+                  <strong>{attestation.flags}</strong>
+                </div>
+                <div className="kv">
+                  <span>Expiration</span>
+                  <strong>{attestation.expiration > 0 ? new Date(attestation.expiration * 1000).toISOString() : "-"}</strong>
+                </div>
+                <div className="kv">
+                  <span>Risk score</span>
+                  <strong>{attestation.riskScore}</strong>
+                </div>
+                <div className="kv">
+                  <span>Subject type</span>
+                  <strong>{attestation.subjectType}</strong>
+                </div>
+              </div>
+            ) : (
+              <p className="muted">No attestation loaded yet.</p>
+            )}
+          </section>
+
+          <section className="panel reveal delay-3">
+            <h2>Admin (read-only)</h2>
+            <div className="kv-grid compact">
+              <div className="kv">
+                <span>CRE issuer</span>
+                <strong>{env.creIssuer ?? "not set"}</strong>
+              </div>
+              <div className="kv">
+                <span>Issuer allowed</span>
+                <strong>{creIssuerAllowed === null ? "unknown" : String(creIssuerAllowed)}</strong>
+              </div>
+              <div className="kv">
+                <span>Policy ID</span>
+                <strong>{env.policyId.toString()}</strong>
+              </div>
+              <div className="kv">
+                <span>Registry</span>
+                <strong>{env.passRegistry}</strong>
+              </div>
+              <div className="kv">
+                <span>Broker</span>
+                <strong>{env.kycBroker}</strong>
+              </div>
+            </div>
+          </section>
         </div>
-      </section>
+      </div>
     </div>
   );
 }
