@@ -6,10 +6,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "lint": "echo 'No lint configured for cre'",
-    "dev:issue-token": "tsx src/workflows/issue-sdk-token.ts --loop",
-    "dev:sync-status": "tsx src/workflows/sync-kyc-status.ts --loop",
-    "run:issue-token": "tsx src/workflows/issue-sdk-token.ts",
-    "run:sync-status": "tsx src/workflows/sync-kyc-status.ts"
+    "dev:worker": "tsx src/workflows/worker.ts --loop",
+    "run:worker": "tsx src/workflows/worker.ts"
   },
   "dependencies": {
     "@metamask/eth-sig-util": "^8.1.1",

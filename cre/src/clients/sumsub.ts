@@ -29,7 +29,27 @@ async function requestSumsub(method: string, path: string, body?: unknown): Prom
 
   if (!res.ok) {
     const errText = await res.text();
-    throw new Error(`Sumsub ${method} ${path} failed (${res.status}): ${errText}`);
+    let hint = "";
+
+    try {
+      const parsed = JSON.parse(errText) as {
+        errorName?: string;
+        errorCode?: number;
+        description?: string;
+      };
+
+      if (parsed.errorName === "app-token-invalid-format" || parsed.errorCode === 4000) {
+        hint =
+          " | Hint: SUMSUB_APP_TOKEN must be your Sumsub App Token (not SDK access token), copied without quotes/spaces.";
+      } else if (parsed.errorCode === 4002) {
+        hint =
+          " | Hint: APP token and SECRET key do not match. Use both from the same Sumsub app/environment.";
+      }
+    } catch {
+      // Keep raw text only.
+    }
+
+    throw new Error(`Sumsub ${method} ${path} failed (${res.status}): ${errText}${hint}`);
   }
 
   return res.json();

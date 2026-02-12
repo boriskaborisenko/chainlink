@@ -325,26 +325,33 @@ h3 {
   cursor: not-allowed;
 }
 
-.field {
+.level-lock {
   margin-top: 0.8rem;
-  display: grid;
-  gap: 0.34rem;
-}
-
-.field span {
-  font-size: 0.82rem;
-  color: var(--ink-soft);
-}
-
-input {
-  width: 100%;
-  border: 1px solid #4c456f;
+  border: 1px solid #594d86;
   border-radius: 12px;
-  padding: 0.66rem 0.72rem;
+  padding: 0.58rem 0.66rem;
+  background: linear-gradient(140deg, rgba(37, 31, 66, 0.9), rgba(56, 42, 102, 0.75));
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.55rem;
+}
+
+.level-label {
+  font-size: 0.78rem;
+  color: #cfc2f8;
+  font-weight: 600;
+}
+
+.level-pill {
+  border: 1px solid #9873ff;
+  border-radius: 999px;
+  padding: 0.2rem 0.55rem;
+  font-size: 0.74rem;
   font-family: "JetBrains Mono", monospace;
-  font-size: 0.9rem;
-  color: #efe7ff;
-  background: rgba(28, 26, 46, 0.9);
+  font-weight: 700;
+  color: #efe8ff;
+  background: rgba(143, 97, 255, 0.25);
 }
 
 .kv-grid {
@@ -458,5 +465,10 @@ input {
   .step-badge {
     grid-column: 2;
     width: fit-content;
+  }
+
+  .level-lock {
+    flex-direction: column;
+    align-items: flex-start;
   }
 }

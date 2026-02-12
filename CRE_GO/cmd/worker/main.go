@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"passstore/cre_go/internal/config"
+	"passstore/cre_go/internal/cryptobox"
 	"passstore/cre_go/internal/eth"
 	"passstore/cre_go/internal/state"
 	"passstore/cre_go/internal/sumsub"
@@ -34,11 +35,11 @@ func main() {
 	sumClient := sumsub.New(cfg)
 
 	run := func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 		defer cancel()
 
 		if err := runOnce(ctx, cfg, chain, sumClient); err != nil {
-			log.Printf("SyncKycStatus run error: %v", err)
+			log.Printf("Unified worker run error: %v", err)
 		}
 	}
 
@@ -47,7 +48,7 @@ func main() {
 		return
 	}
 
-	log.Printf("SyncKycStatus worker started with interval=%dms", cfg.PollIntervalMS)
+	log.Printf("Unified CRE_GO worker started with interval=%dms", cfg.PollIntervalMS)
 	ticker := time.NewTicker(time.Duration(cfg.PollIntervalMS) * time.Millisecond)
 	defer ticker.Stop()
 
@@ -68,6 +69,119 @@ func runOnce(ctx context.Context, cfg config.Config, chain *eth.Clients, sumClie
 		return err
 	}
 
+	if err := runIssuePass(ctx, cfg, chain, sumClient, latest, &st); err != nil {
+		log.Printf("issue pass error: %v", err)
+	}
+
+	if err := runSyncPass(ctx, cfg, chain, sumClient, latest, &st); err != nil {
+		log.Printf("sync pass error: %v", err)
+	}
+
+	return state.Write(cfg.StateFile, st)
+}
+
+func runIssuePass(
+	ctx context.Context,
+	cfg config.Config,
+	chain *eth.Clients,
+	sumClient *sumsub.Client,
+	latest uint64,
+	st *state.WorkflowState,
+) error {
+	fromBlock := uint64(0)
+	if st.LastIssueTokenBlock > 0 {
+		fromBlock = st.LastIssueTokenBlock + 1
+	} else if latest > 2000 {
+		fromBlock = latest - 2000
+	}
+
+	events, err := chain.QueryKycRequested(ctx, fromBlock, latest)
+	if err != nil {
+		return err
+	}
+
+	if len(events) == 0 {
+		log.Printf("Issue pass: no KycRequested events in blocks %d-%d", fromBlock, latest)
+	}
+
+	for _, ev := range events {
+		if err := processIssueEvent(ctx, cfg, chain, sumClient, ev, st); err != nil {
+			log.Printf("issue event requestId=%s failed: %v", ev.RequestID.String(), err)
+		}
+	}
+
+	st.LastIssueTokenBlock = latest
+	return nil
+}
+
+func processIssueEvent(
+	ctx context.Context,
+	cfg config.Config,
+	chain *eth.Clients,
+	sumClient *sumsub.Client,
+	ev eth.KycRequestedEvent,
+	st *state.WorkflowState,
+) error {
+	pkt, err := chain.GetPacket(ctx, ev.RequestID)
+	if err != nil {
+		return err
+	}
+	if len(pkt.Ciphertext) > 0 {
+		log.Printf("requestId=%s already has token packet, skipping", ev.RequestID.String())
+		return nil
+	}
+
+	pubKeyBytes, err := chain.EncryptionPubKey(ctx, ev.User)
+	if err != nil {
+		return err
+	}
+	if len(pubKeyBytes) == 0 {
+		log.Printf("user=%s has no encryption key, skipping requestId=%s", ev.User.Hex(), ev.RequestID.String())
+		return nil
+	}
+
+	if ev.LevelName != "" && ev.LevelName != cfg.KYCLevelName {
+		log.Printf("requestId=%s event level '%s' overridden by ENV level '%s'", ev.RequestID.String(), ev.LevelName, cfg.KYCLevelName)
+	}
+
+	token, err := sumClient.GenerateSDKToken(ctx, ev.User.Hex(), cfg.KYCLevelName, cfg.TokenTTLSeconds)
+	if err != nil {
+		return err
+	}
+
+	ciphertext, err := cryptobox.EncryptForMetaMask(string(pubKeyBytes), token)
+	if err != nil {
+		return err
+	}
+
+	expiresAt := uint64(time.Now().Unix()) + uint64(cfg.TokenTTLSeconds)
+	tx, err := chain.StoreEncryptedToken(ctx, ev.RequestID, ciphertext, expiresAt)
+	if err != nil {
+		return err
+	}
+	if err := chain.WaitMined(ctx, tx); err != nil {
+		return err
+	}
+
+	log.Printf("stored encrypted token requestId=%s user=%s tx=%s", ev.RequestID.String(), ev.User.Hex(), tx.Hash().Hex())
+
+	key := strings.ToLower(ev.User.Hex())
+	u := st.Users[key]
+	u.UserID = ev.User.Hex()
+	u.LastSeenRequestID = ev.RequestID.String()
+	st.Users[key] = u
+
+	return nil
+}
+
+func runSyncPass(
+	ctx context.Context,
+	cfg config.Config,
+	chain *eth.Clients,
+	sumClient *sumsub.Client,
+	latest uint64,
+	st *state.WorkflowState,
+) error {
 	fromBlock := uint64(0)
 	if st.LastSyncBlock > 0 {
 		fromBlock = st.LastSyncBlock + 1
@@ -89,7 +203,7 @@ func runOnce(ctx context.Context, cfg config.Config, chain *eth.Clients, sumClie
 	}
 
 	if len(st.Users) == 0 {
-		log.Printf("SyncKycStatus: no users to check yet")
+		log.Printf("Sync pass: no users to check yet")
 	}
 
 	for key, userState := range st.Users {
@@ -121,7 +235,7 @@ func runOnce(ctx context.Context, cfg config.Config, chain *eth.Clients, sumClie
 	}
 
 	st.LastSyncBlock = latest
-	return state.Write(cfg.StateFile, st)
+	return nil
 }
 
 func applyDecision(ctx context.Context, cfg config.Config, chain *eth.Clients, userID string, decision sumsub.ReviewDecision) error {

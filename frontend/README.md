@@ -7,7 +7,7 @@ React + Vite app that drives the full no-backend user flow.
 1. Connect wallet.
 2. Click `Enable encryption` (calls `eth_getEncryptionPublicKey` + `setEncryptionPubKey`).
 3. Click `Start verification`:
-   - calls `requestKyc(levelName)`
+   - calls `requestKyc(VITE_KYC_LEVEL_NAME)` (fixed level shown as a UI pill)
    - polls `KycSessionBroker.getPacket(requestId)`
    - decrypts ciphertext using `eth_decrypt`
    - launches Sumsub WebSDK in-page
@@ -21,4 +21,3 @@ React + Vite app that drives the full no-backend user flow.
 ```bash
 npm run dev
 ```
-

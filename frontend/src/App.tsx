@@ -70,7 +70,6 @@ export default function App() {
   const [busy, setBusy] = useState<boolean>(false);
   const [status, setStatus] = useState<string>("Idle");
   const [error, setError] = useState<string>("");
-  const [levelName, setLevelName] = useState<string>("basic-kyc");
   const [requestId, setRequestId] = useState<string>("-");
   const [sdkTokenPreview, setSdkTokenPreview] = useState<string>("-");
   const [verify, setVerify] = useState<VerifySnapshot>({ ok: false, reason: 1 });
@@ -249,7 +248,7 @@ export default function App() {
       const signer = await provider.getSigner();
       const { broker } = makeContracts(signer);
 
-      const tx = await broker.requestKyc(levelName);
+      const tx = await broker.requestKyc(env.kycLevelName);
       const receipt = await tx.wait();
 
       const iface = new Interface(kycBrokerAbi);
@@ -448,10 +447,10 @@ export default function App() {
             </button>
           </div>
 
-          <label className="field">
-            <span>Sumsub level</span>
-            <input value={levelName} onChange={(e) => setLevelName(e.target.value)} />
-          </label>
+          <div className="level-lock">
+            <span className="level-label">KYC Level (ENV)</span>
+            <span className="level-pill">{env.kycLevelName}</span>
+          </div>
 
           <div className="kv-grid">
             <div className="kv">

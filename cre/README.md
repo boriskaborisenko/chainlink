@@ -4,26 +4,20 @@ This package acts as the no-backend server role for Sumsub integration.
 
 ## Workflows
 
-- `IssueSdkToken` (`src/workflows/issue-sdk-token.ts`)
-  - Watches `KycSessionBroker.KycRequested`.
-  - Calls Sumsub to generate an SDK token.
-  - Encrypts token for the user's MetaMask encryption key.
-  - Stores ciphertext onchain via `storeEncryptedToken`.
-
-- `SyncKycStatus` (`src/workflows/sync-kyc-status.ts`)
-  - Polls Sumsub review status for known users.
-  - `GREEN` -> `PassRegistry.attest(...)`
-  - `RED` -> `PassRegistry.revoke(...)`
-  - `PENDING` -> no onchain write.
+- `UnifiedWorker` (`src/workflows/worker.ts`)
+  - Pass A: watches `KycSessionBroker.KycRequested`, creates Sumsub SDK token, encrypts it for user key, stores ciphertext onchain.
+  - Pass B: polls Sumsub review status for known users and updates `PassRegistry`:
+    - `GREEN` -> `attest(...)`
+    - `RED` -> `revoke(...)`
+    - `PENDING` -> no write
 
 ## Run
 
 1. Copy `.env.example` to `.env` and fill contract addresses + Sumsub credentials.
-2. Start workers in separate terminals:
+2. Start single worker:
 
 ```bash
-npm run dev:issue-token
-npm run dev:sync-status
+npm run dev:worker
 ```
 
 ## Security Notes
@@ -31,4 +25,4 @@ npm run dev:sync-status
 - Sumsub secrets are only read from env (map to CRE/DON secret vault in production).
 - SDK token ciphertext is stored onchain; plaintext is not.
 - No PII is persisted in local state.
-
+- KYC level name for SDK token issuance is controlled via ENV `KYC_LEVEL_NAME`.

@@ -3,7 +3,7 @@
 Monorepo with three packages:
 
 - `contracts/` - Solidity contracts (registry, broker, demo gated apps).
-- `cre/` - Chainlink CRE workflow workers (SDK token issue + KYC sync polling).
+- `cre/` - Chainlink CRE unified worker (SDK token issue + KYC sync polling in one loop).
 - `CRE_GO/` - Backup Go implementation of CRE workers (same flow as `cre/`).
 - `frontend/` - React app for wallet flow, Sumsub WebSDK launch, and gated actions.
 
@@ -14,9 +14,9 @@ The architecture is provider-agnostic: Sumsub is the first integrated KYC provid
 1. User connects wallet in frontend.
 2. User grants encryption key (`eth_getEncryptionPublicKey`) and stores it in `KycSessionBroker`.
 3. User calls `requestKyc(levelName)`.
-4. CRE workflow `IssueSdkToken` catches `KycRequested`, asks Sumsub for SDK token, encrypts token for user key, writes ciphertext onchain.
+4. Unified CRE worker pass `IssueSdkToken` catches `KycRequested`, asks Sumsub for SDK token, encrypts token for user key, writes ciphertext onchain.
 5. Frontend reads ciphertext, decrypts using `eth_decrypt`, and launches Sumsub WebSDK.
-6. CRE workflow `SyncKycStatus` polls Sumsub statuses and updates `PassRegistry` (`attest`/`revoke`).
+6. The same unified CRE worker then runs pass `SyncKycStatus`, polls Sumsub statuses, and updates `PassRegistry` (`attest`/`revoke`).
 7. Demo contracts (`AccessPass`, `ClaimDrop`) gate calls via `PassRegistry.verifyUser`.
 
 ## Quick Start
@@ -57,6 +57,7 @@ npm run deploy:local -w contracts
   - `PASS_REGISTRY_ADDRESS`
   - `KYC_BROKER_ADDRESS`
 - set `CRE_SIGNER_PK` in `cre/.env` and allowlist that address in contracts deploy (`CRE_ISSUER` in `contracts/.env`) or via admin tx.
+- set `KYC_LEVEL_NAME` in `cre/.env` to the exact Sumsub level name from your dashboard.
 
 6. Fill Sumsub settings in `cre/.env`:
 
@@ -64,11 +65,10 @@ npm run deploy:local -w contracts
 - `SUMSUB_SECRET_KEY`
 - optional endpoint overrides if your Sumsub project uses different paths.
 
-7. Start CRE workers (in separate terminals):
+7. Start CRE worker:
 
 ```bash
-npm run dev:issue-token -w cre
-npm run dev:sync-status -w cre
+npm run dev:worker -w cre
 ```
 
 8. Start frontend:
@@ -98,8 +98,7 @@ npm run dev -w frontend
 - `contracts/contracts/KycSessionBroker.sol` - Encryption keys, KYC requests, encrypted packets.
 - `contracts/contracts/AccessPass.sol` - Mint-gated demo app.
 - `contracts/contracts/ClaimDrop.sol` - Claim-gated demo app.
-- `cre/src/workflows/issue-sdk-token.ts` - Event-driven SDK token issuance.
-- `cre/src/workflows/sync-kyc-status.ts` - Cron-style status sync and onchain updates.
+- `cre/src/workflows/worker.ts` - Unified worker that performs token issuance pass and KYC sync pass.
 - `frontend/src/App.tsx` - Wallet UX + decrypt + WebSDK + demo actions.
 
 ## Notes

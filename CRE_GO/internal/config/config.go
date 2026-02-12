@@ -18,7 +18,7 @@ type Config struct {
 	SumsubSecretKey       string
 	SumsubSDKTokenPath    string
 	SumsubStatusPathTmpl  string
-	DefaultLevelName      string
+	KYCLevelName          string
 	TokenTTLSeconds       int
 	PollIntervalMS        int
 	AttestationExpiryDays int
@@ -54,7 +54,7 @@ func Load() (Config, error) {
 	cfg.SumsubBaseURL = optional("SUMSUB_BASE_URL", "https://api.sumsub.com")
 	cfg.SumsubSDKTokenPath = optional("SUMSUB_SDK_TOKEN_PATH", "/resources/accessTokens/sdk")
 	cfg.SumsubStatusPathTmpl = optional("SUMSUB_STATUS_PATH_TEMPLATE", "/resources/applicants/-;externalUserId={userId}/one")
-	cfg.DefaultLevelName = optional("DEFAULT_LEVEL_NAME", "basic-kyc")
+	cfg.KYCLevelName = optional("KYC_LEVEL_NAME", optional("DEFAULT_LEVEL_NAME", "basic-kyc"))
 	cfg.TokenTTLSeconds = optionalInt("TOKEN_TTL_SECONDS", 600)
 	cfg.PollIntervalMS = optionalInt("POLL_INTERVAL_MS", 120000)
 	cfg.AttestationExpiryDays = optionalInt("ATTESTATION_EXPIRATION_DAYS", 180)

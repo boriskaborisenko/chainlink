@@ -3,10 +3,15 @@ import * as dotenv from "dotenv";
 dotenv.config();
 
 function requireEnv(name: string): string {
-  const value = process.env[name];
+  const value = process.env[name]?.trim();
   if (!value) {
     throw new Error(`Missing required env var: ${name}`);
   }
+
+  if (value === "..." || value.startsWith("PUT_YOUR_")) {
+    throw new Error(`Env var ${name} still contains a placeholder value`);
+  }
+
   return value;
 }
 
@@ -35,7 +40,7 @@ export const config = {
   sumsubSdkTokenPath: process.env.SUMSUB_SDK_TOKEN_PATH ?? "/resources/accessTokens/sdk",
   sumsubStatusPathTemplate:
     process.env.SUMSUB_STATUS_PATH_TEMPLATE ?? "/resources/applicants/-;externalUserId={userId}/one",
-  defaultLevelName: process.env.DEFAULT_LEVEL_NAME ?? "basic-kyc",
+  defaultLevelName: process.env.KYC_LEVEL_NAME ?? process.env.DEFAULT_LEVEL_NAME ?? "basic-kyc",
   tokenTtlSeconds: numberEnv("TOKEN_TTL_SECONDS", 600),
   pollIntervalMs: numberEnv("POLL_INTERVAL_MS", 120000),
   attestationExpirationDays: numberEnv("ATTESTATION_EXPIRATION_DAYS", 180),

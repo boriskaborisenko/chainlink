@@ -14,6 +14,7 @@ function parseNumber(value: string, fallback: number): number {
 export const env = {
   chainId: parseNumber(import.meta.env.VITE_CHAIN_ID ?? "0", 0),
   policyId: BigInt(parseNumber(import.meta.env.VITE_POLICY_ID ?? "0", 0)),
+  kycLevelName: (import.meta.env.VITE_KYC_LEVEL_NAME as string | undefined) ?? "basic-kyc",
   passRegistry: requireEnv("VITE_PASS_REGISTRY"),
   kycBroker: requireEnv("VITE_KYC_BROKER"),
   accessPass: requireEnv("VITE_ACCESS_PASS"),
