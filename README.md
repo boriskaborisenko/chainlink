@@ -12,10 +12,10 @@ The architecture is provider-agnostic: Sumsub is the first integrated KYC provid
 ## Architecture
 
 1. User connects wallet in frontend.
-2. User grants encryption key (`eth_getEncryptionPublicKey`) and stores it in `KycSessionBroker`.
+2. User generates an in-browser session keypair and stores only the session public key in `KycSessionBroker`.
 3. User calls `requestKyc(levelName)`.
 4. Unified CRE worker pass `IssueSdkToken` catches `KycRequested`, asks Sumsub for SDK token, encrypts token for user key, writes ciphertext onchain.
-5. Frontend reads ciphertext, decrypts using `eth_decrypt`, and launches Sumsub WebSDK.
+5. Frontend reads ciphertext, decrypts locally with session secret key, and launches Sumsub WebSDK.
 6. The same unified CRE worker then runs pass `SyncKycStatus`, polls Sumsub statuses, and updates `PassRegistry` (`attest`/`revoke`).
 7. Demo contracts (`AccessPass`, `ClaimDrop`) gate calls via `PassRegistry.verifyUser`.
 
@@ -80,10 +80,10 @@ npm run dev -w frontend
 ## How To Use (E2E)
 
 1. Open frontend and click `Connect wallet`.
-2. Click `Enable encryption` (saves MetaMask encryption pubkey onchain).
+2. Click `Enable encryption` (creates session keypair in browser and saves session public key onchain).
 3. Click `Start verification`.
 4. Wait for `IssueSdkToken` worker to store ciphertext in broker packet.
-5. Frontend decrypts packet with `eth_decrypt` and launches Sumsub WebSDK.
+5. Frontend decrypts packet locally with session secret key and launches Sumsub WebSDK.
 6. In Sumsub Sandbox, simulate review result (`GREEN` or `RED`).
 7. Wait for `SyncKycStatus` tick:
    - `GREEN` -> `PassRegistry.attest`
@@ -99,7 +99,8 @@ npm run dev -w frontend
 - `contracts/contracts/AccessPass.sol` - Mint-gated demo app.
 - `contracts/contracts/ClaimDrop.sol` - Claim-gated demo app.
 - `cre/src/workflows/worker.ts` - Unified worker that performs token issuance pass and KYC sync pass.
-- `frontend/src/App.tsx` - Wallet UX + decrypt + WebSDK + demo actions.
+- `frontend/src/App.tsx` - Wallet UX + session-key decrypt + WebSDK + demo actions.
+- `frontend/src/lib/sessionCrypto.ts` - Session keypair generation and local decrypt helpers.
 
 ## Notes
 

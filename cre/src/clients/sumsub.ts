@@ -2,6 +2,37 @@ import { createHmac } from "node:crypto";
 import { config } from "../config.js";
 import { ReviewDecision, SumsubReviewStatus, SumsubTokenResponse } from "../types.js";
 
+type SumsubErrorPayload = {
+  errorName?: string;
+  errorCode?: number;
+  description?: string;
+};
+
+class SumsubHttpError extends Error {
+  readonly status: number;
+  readonly method: string;
+  readonly path: string;
+  readonly bodyText: string;
+  readonly payload?: SumsubErrorPayload;
+
+  constructor(
+    method: string,
+    path: string,
+    status: number,
+    bodyText: string,
+    payload?: SumsubErrorPayload,
+    hint?: string
+  ) {
+    super(`Sumsub ${method} ${path} failed (${status}): ${bodyText}${hint ?? ""}`);
+    this.name = "SumsubHttpError";
+    this.status = status;
+    this.method = method;
+    this.path = path;
+    this.bodyText = bodyText;
+    this.payload = payload;
+  }
+}
+
 function signature(ts: string, method: string, path: string, body: string): string {
   const payload = `${ts}${method.toUpperCase()}${path}${body}`;
   return createHmac("sha256", config.sumsubSecretKey).update(payload).digest("hex");
@@ -29,14 +60,12 @@ async function requestSumsub(method: string, path: string, body?: unknown): Prom
 
   if (!res.ok) {
     const errText = await res.text();
+    let payload: SumsubErrorPayload | undefined;
     let hint = "";
 
     try {
-      const parsed = JSON.parse(errText) as {
-        errorName?: string;
-        errorCode?: number;
-        description?: string;
-      };
+      const parsed = JSON.parse(errText) as SumsubErrorPayload;
+      payload = parsed;
 
       if (parsed.errorName === "app-token-invalid-format" || parsed.errorCode === 4000) {
         hint =
@@ -49,10 +78,19 @@ async function requestSumsub(method: string, path: string, body?: unknown): Prom
       // Keep raw text only.
     }
 
-    throw new Error(`Sumsub ${method} ${path} failed (${res.status}): ${errText}${hint}`);
+    throw new SumsubHttpError(method, path, res.status, errText, payload, hint);
   }
 
   return res.json();
+}
+
+function isApplicantNotFoundError(err: unknown): boolean {
+  if (!(err instanceof SumsubHttpError) || err.status !== 404) {
+    return false;
+  }
+
+  const description = err.payload?.description?.toLowerCase() ?? "";
+  return description.includes("applicant not found");
 }
 
 function normalizeReviewDecision(rawStatus?: string): ReviewDecision {
@@ -98,7 +136,21 @@ export async function generateSdkToken(
 
 export async function getReviewStatusByUserId(userId: string): Promise<SumsubReviewStatus> {
   const path = config.sumsubStatusPathTemplate.replace("{userId}", encodeURIComponent(userId));
-  const raw = (await requestSumsub("GET", path)) as Record<string, any>;
+  let raw: Record<string, any>;
+
+  try {
+    raw = (await requestSumsub("GET", path)) as Record<string, any>;
+  } catch (err) {
+    if (isApplicantNotFoundError(err)) {
+      return {
+        userId,
+        decision: "PENDING",
+        raw: { applicantNotFound: true }
+      };
+    }
+
+    throw err;
+  }
 
   const reviewStatus =
     raw?.review?.reviewStatus ?? raw?.reviewStatus ?? raw?.reviewResult?.reviewAnswer ?? raw?.inspectionStatus;

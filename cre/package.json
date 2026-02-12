@@ -10,9 +10,9 @@
     "run:worker": "tsx src/workflows/worker.ts"
   },
   "dependencies": {
-    "@metamask/eth-sig-util": "^8.1.1",
     "dotenv": "^16.4.7",
-    "ethers": "^6.13.4"
+    "ethers": "^6.13.4",
+    "tweetnacl": "^1.0.3"
   },
   "devDependencies": {
     "@types/node": "^20.17.57",

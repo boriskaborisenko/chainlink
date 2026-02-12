@@ -296,6 +296,11 @@ h3 {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.button-grid.one {
+  margin-top: 0.45rem;
+  grid-template-columns: 1fr;
+}
+
 .btn {
   border: 1px solid #56498d;
   border-radius: 10px;

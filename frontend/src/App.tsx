@@ -5,6 +5,7 @@ import { kycBrokerAbi } from "./abi/kycBroker";
 import { accessPassAbi } from "./abi/accessPass";
 import { claimDropAbi } from "./abi/claimDrop";
 import { env } from "./lib/env";
+import { decryptSessionCiphertextHex, generateSessionKeyPairHex } from "./lib/sessionCrypto";
 
 type VerifySnapshot = {
   ok: boolean;
@@ -18,6 +19,13 @@ type AttestationSnapshot = {
   expiration: number;
   riskScore: number;
   subjectType: number;
+};
+
+type PendingDecryptPacket = {
+  requestId: string;
+  ciphertextHex: string;
+  expiresAt: number;
+  owner: string;
 };
 
 function reasonLabel(reason: number): string {
@@ -78,6 +86,8 @@ export default function App() {
   const [hasMinted, setHasMinted] = useState<boolean>(false);
   const [hasClaimed, setHasClaimed] = useState<boolean>(false);
   const [creIssuerAllowed, setCreIssuerAllowed] = useState<boolean | null>(null);
+  const [pendingDecrypt, setPendingDecrypt] = useState<PendingDecryptPacket | null>(null);
+  const [sessionSecretKeyHex, setSessionSecretKeyHex] = useState<string>("");
 
   const provider = useMemo(() => {
     if (!window.ethereum) {
@@ -87,9 +97,45 @@ export default function App() {
     return new BrowserProvider(window.ethereum);
   }, []);
 
+  async function getActiveSignerAndAddress(): Promise<{ signer: ethers.Signer; address: string }> {
+    if (!provider) {
+      throw new Error("Provider unavailable");
+    }
+
+    const signer = await provider.getSigner();
+    const address = await signer.getAddress();
+
+    if (!account || account.toLowerCase() !== address.toLowerCase()) {
+      setAccount(address);
+      setSessionSecretKeyHex("");
+      setPendingDecrypt(null);
+      setEncryptionReady(false);
+    }
+
+    return { signer, address };
+  }
+
+  async function ensureExpectedNetwork(): Promise<boolean> {
+    if (!provider) {
+      return false;
+    }
+
+    const network = await provider.getNetwork();
+    const currentChainId = Number(network.chainId);
+    setChainId(currentChainId);
+
+    if (env.chainId > 0 && currentChainId !== env.chainId) {
+      setStatus(`Wrong network (${currentChainId}). Switch to chain ${env.chainId}.`);
+      setError(`Wrong network: expected chainId ${env.chainId}, got ${currentChainId}`);
+      return false;
+    }
+
+    return true;
+  }
+
   async function connectWallet() {
     if (!window.ethereum || !provider) {
-      setError("MetaMask is required");
+      setError("EVM wallet provider is required");
       return;
     }
 
@@ -102,7 +148,14 @@ export default function App() {
       setAccount(selected);
 
       const network = await provider.getNetwork();
-      setChainId(Number(network.chainId));
+      const currentChainId = Number(network.chainId);
+      setChainId(currentChainId);
+
+      if (env.chainId > 0 && currentChainId !== env.chainId) {
+        setStatus(`Wallet connected, but wrong network (${currentChainId}). Switch to ${env.chainId}.`);
+        setError(`Wrong network: expected chainId ${env.chainId}, got ${currentChainId}`);
+        return;
+      }
 
       setStatus("Wallet connected");
       await refreshOnchainData(selected);
@@ -120,6 +173,11 @@ export default function App() {
 
     const user = (forAccount ?? account).toLowerCase();
     if (!user) {
+      return;
+    }
+
+    const onExpectedNetwork = await ensureExpectedNetwork();
+    if (!onExpectedNetwork) {
       return;
     }
 
@@ -142,7 +200,11 @@ export default function App() {
       revoked: Boolean(attResult[6]),
       exists: Boolean(attResult[7])
     });
-    setEncryptionReady(pubKeyHex !== "0x");
+    const hasOnchainEncryptionKey = pubKeyHex !== "0x";
+    setEncryptionReady(hasOnchainEncryptionKey && Boolean(sessionSecretKeyHex));
+    if (hasOnchainEncryptionKey && !sessionSecretKeyHex) {
+      setStatus("Onchain encryption key exists, but local session key is missing. Click Enable encryption again.");
+    }
     setHasMinted(Boolean(mintedResult));
     setHasClaimed(Boolean(claimedResult));
 
@@ -153,7 +215,7 @@ export default function App() {
   }
 
   async function enableEncryption() {
-    if (!window.ethereum || !provider || !account) {
+    if (!provider || !account) {
       setError("Connect wallet first");
       return;
     }
@@ -162,17 +224,20 @@ export default function App() {
     setError("");
 
     try {
-      const pubKey = (await window.ethereum.request({
-        method: "eth_getEncryptionPublicKey",
-        params: [account]
-      })) as string;
+      const onExpectedNetwork = await ensureExpectedNetwork();
+      if (!onExpectedNetwork) {
+        return;
+      }
 
-      const signer = await provider.getSigner();
+      const { signer, address } = await getActiveSignerAndAddress();
+      const keyPair = generateSessionKeyPairHex();
+
       const { broker } = makeContracts(signer);
-      const tx = await broker.setEncryptionPubKey(ethers.hexlify(ethers.toUtf8Bytes(pubKey)));
+      const tx = await broker.setEncryptionPubKey(keyPair.publicKeyHex);
       await tx.wait();
 
-      setStatus("Encryption public key stored onchain");
+      setSessionSecretKeyHex(keyPair.secretKeyHex);
+      setStatus(`Session encryption key stored onchain for ${shortAddress(address)}`);
       setEncryptionReady(true);
     } catch (err) {
       setError((err as Error).message);
@@ -230,14 +295,19 @@ export default function App() {
     sdk.launch("#sumsub-websdk-container");
   }
 
-  async function startVerification() {
-    if (!provider || !account) {
-      setError("Connect wallet first");
+  async function decryptPendingToken() {
+    if (!provider) {
+      setError("Provider unavailable");
       return;
     }
 
-    if (!encryptionReady) {
-      setError("Enable encryption before starting verification");
+    if (!pendingDecrypt) {
+      setError("No encrypted token is waiting for decryption");
+      return;
+    }
+
+    if (!sessionSecretKeyHex) {
+      setError("Missing local session secret key. Click Enable encryption and start verification again.");
       return;
     }
 
@@ -245,7 +315,66 @@ export default function App() {
     setError("");
 
     try {
-      const signer = await provider.getSigner();
+      const onExpectedNetwork = await ensureExpectedNetwork();
+      if (!onExpectedNetwork) {
+        return;
+      }
+
+      const now = Math.floor(Date.now() / 1000);
+      if (pendingDecrypt.expiresAt > 0 && pendingDecrypt.expiresAt < now) {
+        throw new Error("SDK token packet expired. Start verification again.");
+      }
+
+      const { signer, address } = await getActiveSignerAndAddress();
+      if (address.toLowerCase() !== pendingDecrypt.owner.toLowerCase()) {
+        throw new Error(
+          `Wrong wallet for decrypt. Switch to ${shortAddress(pendingDecrypt.owner)} and try Decrypt SDK token again.`
+        );
+      }
+
+      const decryptedToken = decryptSessionCiphertextHex(pendingDecrypt.ciphertextHex, sessionSecretKeyHex);
+
+      const preview = `${decryptedToken.slice(0, 8)}...${decryptedToken.slice(-6)}`;
+      setSdkTokenPreview(preview);
+      setStatus(`SDK token decrypted (expiresAt=${pendingDecrypt.expiresAt}), launching Sumsub...`);
+
+      launchSumsub(decryptedToken);
+
+      const { broker } = makeContracts(signer);
+      const txConsume = await broker.markConsumed(BigInt(pendingDecrypt.requestId));
+      await txConsume.wait();
+
+      setPendingDecrypt(null);
+      setStatus("Token consumed onchain. Complete Sumsub flow, then press Refresh status.");
+      await refreshOnchainData(address);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function startVerification() {
+    if (!provider || !account) {
+      setError("Connect wallet first");
+      return;
+    }
+
+    if (!sessionSecretKeyHex) {
+      setError("Click Enable encryption first to generate a local session key");
+      return;
+    }
+
+    setBusy(true);
+    setError("");
+
+    try {
+      const onExpectedNetwork = await ensureExpectedNetwork();
+      if (!onExpectedNetwork) {
+        return;
+      }
+
+      const { signer, address } = await getActiveSignerAndAddress();
       const { broker } = makeContracts(signer);
 
       const tx = await broker.requestKyc(env.kycLevelName);
@@ -275,28 +404,18 @@ export default function App() {
       }
 
       setRequestId(newRequestId.toString());
+      setSdkTokenPreview("-");
+      setPendingDecrypt(null);
       setStatus(`KYC request submitted (#${newRequestId.toString()})`);
 
       const packet = await pollEncryptedPacket(newRequestId);
-      const encryptedPayload = ethers.toUtf8String(packet.ciphertextHex);
-
-      const decryptedToken = (await window.ethereum?.request({
-        method: "eth_decrypt",
-        params: [encryptedPayload, account]
-      })) as string;
-
-      if (!decryptedToken) {
-        throw new Error("Decryption failed");
-      }
-
-      const preview = `${decryptedToken.slice(0, 8)}...${decryptedToken.slice(-6)}`;
-      setSdkTokenPreview(preview);
-      setStatus(`SDK token decrypted (expiresAt=${packet.expiresAt})`);
-
-      launchSumsub(decryptedToken);
-
-      const txConsume = await broker.markConsumed(newRequestId);
-      await txConsume.wait();
+      setPendingDecrypt({
+        requestId: newRequestId.toString(),
+        ciphertextHex: packet.ciphertextHex,
+        expiresAt: packet.expiresAt,
+        owner: address
+      });
+      setStatus("Encrypted SDK token received. Click Decrypt SDK token.");
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -314,7 +433,12 @@ export default function App() {
     setError("");
 
     try {
-      const signer = await provider.getSigner();
+      const onExpectedNetwork = await ensureExpectedNetwork();
+      if (!onExpectedNetwork) {
+        return;
+      }
+
+      const { signer } = await getActiveSignerAndAddress();
       const { accessPass } = makeContracts(signer);
       const tx = await accessPass.mint();
       await tx.wait();
@@ -337,7 +461,12 @@ export default function App() {
     setError("");
 
     try {
-      const signer = await provider.getSigner();
+      const onExpectedNetwork = await ensureExpectedNetwork();
+      if (!onExpectedNetwork) {
+        return;
+      }
+
+      const { signer } = await getActiveSignerAndAddress();
       const { claimDrop } = makeContracts(signer);
       const tx = await claimDrop.claim();
       await tx.wait();
@@ -355,6 +484,7 @@ export default function App() {
   const verifyText = `${String(verify.ok)} (${reasonLabel(verify.reason)})`;
   const hasRequest = requestId !== "-";
   const hasSdkToken = sdkTokenPreview !== "-";
+  const waitingDecrypt = Boolean(pendingDecrypt);
 
   return (
     <div className="page">
@@ -406,8 +536,8 @@ export default function App() {
               <article className={`step ${encryptionReady ? "done" : account ? "active" : "pending"}`}>
                 <span className="step-index">2</span>
                 <div className="step-content">
-                  <p className="step-title">Enable encryption key</p>
-                  <p className="step-note">Click Enable encryption to store your MetaMask public key onchain.</p>
+                  <p className="step-title">Generate session key</p>
+                  <p className="step-note">Click Enable encryption to create a local session key and store pubkey onchain.</p>
                 </div>
                 <span className="step-badge">{encryptionReady ? "done" : account ? "now" : "pending"}</span>
               </article>
@@ -416,9 +546,11 @@ export default function App() {
                 <span className="step-index">3</span>
                 <div className="step-content">
                   <p className="step-title">Start KYC and fetch SDK token</p>
-                  <p className="step-note">Request session, wait CRE token packet, decrypt it in wallet.</p>
+                  <p className="step-note">Request session, wait CRE token packet, decrypt token locally in browser.</p>
                 </div>
-                <span className="step-badge">{hasSdkToken ? "done" : hasRequest ? "waiting CRE" : "pending"}</span>
+                <span className="step-badge">
+                  {hasSdkToken ? "done" : waitingDecrypt ? "decrypt now" : hasRequest ? "waiting CRE" : "pending"}
+                </span>
               </article>
 
               <article className={`step ${verify.ok ? "done" : hasSdkToken ? "active" : "pending"}`}>
@@ -436,16 +568,27 @@ export default function App() {
             <button className="btn strong" onClick={connectWallet} disabled={busy}>
               Connect wallet
             </button>
-            <button className="btn" onClick={() => refreshOnchainData()} disabled={busy || !account}>
+            <button className="btn" onClick={() => refreshOnchainData()} disabled={busy || !account || networkMismatch}>
               Refresh status
             </button>
-            <button className="btn" onClick={enableEncryption} disabled={busy || !account}>
+            <button className="btn" onClick={enableEncryption} disabled={busy || !account || networkMismatch || waitingDecrypt}>
               Enable encryption
             </button>
-            <button className="btn strong" onClick={startVerification} disabled={busy || !account || !encryptionReady}>
+            <button
+              className="btn strong"
+              onClick={startVerification}
+              disabled={busy || !account || !encryptionReady || networkMismatch || waitingDecrypt}
+            >
               Start verification
             </button>
           </div>
+          {pendingDecrypt ? (
+            <div className="button-grid one">
+              <button className="btn strong" onClick={decryptPendingToken} disabled={busy || networkMismatch}>
+                Decrypt SDK token
+              </button>
+            </div>
+          ) : null}
 
           <div className="level-lock">
             <span className="level-label">KYC Level (ENV)</span>
@@ -488,10 +631,10 @@ export default function App() {
           <section className="panel reveal delay-1">
             <h2>Demo Apps</h2>
             <div className="button-grid single">
-              <button className="btn strong" onClick={mintAccessPass} disabled={busy || !account}>
+              <button className="btn strong" onClick={mintAccessPass} disabled={busy || !account || networkMismatch}>
                 Mint AccessPass
               </button>
-              <button className="btn" onClick={claimDrop} disabled={busy || !account}>
+              <button className="btn" onClick={claimDrop} disabled={busy || !account || networkMismatch}>
                 Claim Drop
               </button>
             </div>

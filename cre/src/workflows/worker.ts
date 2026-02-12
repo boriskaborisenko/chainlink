@@ -1,11 +1,13 @@
 import { EventLog, ethers } from "ethers";
 import { getBroker, getProvider, getRegistry } from "../clients/chain.js";
-import { encryptForMetaMask } from "../clients/crypto.js";
+import { encryptForSessionKey } from "../clients/crypto.js";
 import { generateSdkToken, getReviewStatusByUserId } from "../clients/sumsub.js";
 import { config } from "../config.js";
 import { readState, writeState } from "../state.js";
 import { KycRequestEventData, ReviewDecision } from "../types.js";
 import { shouldLoop, sleep } from "./shared.js";
+
+const LOG_LOOKBACK_BLOCKS = 2000;
 
 async function readKycRequests(fromBlock: number, toBlock: number): Promise<KycRequestEventData[]> {
   if (fromBlock > toBlock) {
@@ -26,6 +28,21 @@ async function readKycRequests(fromBlock: number, toBlock: number): Promise<KycR
   }));
 }
 
+function resolveFromBlock(lastProcessedBlock: number, latestBlock: number, scope: string): number {
+  if (lastProcessedBlock <= 0) {
+    return Math.max(0, latestBlock - LOG_LOOKBACK_BLOCKS);
+  }
+
+  if (lastProcessedBlock > latestBlock) {
+    console.warn(
+      `${scope}: chain rewind detected (lastProcessed=${lastProcessedBlock}, latest=${latestBlock}), resetting cursor`
+    );
+    return Math.max(0, latestBlock - LOG_LOOKBACK_BLOCKS);
+  }
+
+  return lastProcessedBlock + 1;
+}
+
 async function processIssueEvent(event: KycRequestEventData): Promise<void> {
   const broker = getBroker();
 
@@ -43,7 +60,14 @@ async function processIssueEvent(event: KycRequestEventData): Promise<void> {
     return;
   }
 
-  const userPubKey = ethers.toUtf8String(pubKeyBytes);
+  const userPubKey = ethers.getBytes(pubKeyBytes);
+  if (userPubKey.length !== 32) {
+    console.log(
+      `user=${event.user} has invalid encryption key length=${userPubKey.length}, skipping requestId=${event.requestId.toString()}`
+    );
+    return;
+  }
+
   const configuredLevel = config.defaultLevelName;
   if (event.levelName && event.levelName !== configuredLevel) {
     console.log(
@@ -53,7 +77,7 @@ async function processIssueEvent(event: KycRequestEventData): Promise<void> {
 
   const tokenResponse = await generateSdkToken(event.user, configuredLevel, config.tokenTtlSeconds);
 
-  const ciphertext = encryptForMetaMask(userPubKey, tokenResponse.token);
+  const ciphertext = encryptForSessionKey(userPubKey, tokenResponse.token);
   const expiresAt = BigInt(Math.floor(Date.now() / 1000) + config.tokenTtlSeconds);
 
   const tx = await broker.storeEncryptedToken(event.requestId, ethers.hexlify(ciphertext), expiresAt);
@@ -64,7 +88,14 @@ async function processIssueEvent(event: KycRequestEventData): Promise<void> {
 
 async function runIssueSdkTokenPass(latestBlock: number): Promise<void> {
   const state = readState();
-  const fromBlock = state.lastIssueTokenBlock > 0 ? state.lastIssueTokenBlock + 1 : Math.max(0, latestBlock - 2000);
+  const fromBlock = resolveFromBlock(state.lastIssueTokenBlock, latestBlock, "IssueSdkToken");
+
+  if (fromBlock > latestBlock) {
+    state.lastIssueTokenBlock = latestBlock;
+    writeState(state);
+    return;
+  }
+
   const events = await readKycRequests(fromBlock, latestBlock);
 
   if (events.length === 0) {
@@ -136,18 +167,36 @@ async function applyDecision(user: string, decision: ReviewDecision): Promise<vo
   console.log(`user=${user} still pending`);
 }
 
+async function isRequestConsumed(requestId: string): Promise<boolean> {
+  const broker = getBroker();
+  const packet = await broker.getPacket(BigInt(requestId));
+
+  const ciphertextHex = packet[1] as string;
+  const consumed = Boolean(packet[3]);
+  const exists = Boolean(packet[4]);
+
+  if (!exists || ciphertextHex === "0x") {
+    return false;
+  }
+
+  return consumed;
+}
+
 async function runSyncKycStatusPass(latestBlock: number): Promise<void> {
   const state = readState();
-  const fromBlock = state.lastSyncBlock > 0 ? state.lastSyncBlock + 1 : Math.max(0, latestBlock - 2000);
-  const recentRequests = await readKycRequests(fromBlock, latestBlock);
+  const fromBlock = resolveFromBlock(state.lastSyncBlock, latestBlock, "SyncKycStatus");
 
-  for (const event of recentRequests) {
-    const key = event.user.toLowerCase();
-    state.users[key] = {
-      ...state.users[key],
-      userId: event.user,
-      lastSeenRequestId: event.requestId.toString()
-    };
+  if (fromBlock <= latestBlock) {
+    const recentRequests = await readKycRequests(fromBlock, latestBlock);
+
+    for (const event of recentRequests) {
+      const key = event.user.toLowerCase();
+      state.users[key] = {
+        ...state.users[key],
+        userId: event.user,
+        lastSeenRequestId: event.requestId.toString()
+      };
+    }
   }
 
   const users = Object.entries(state.users);
@@ -157,14 +206,33 @@ async function runSyncKycStatusPass(latestBlock: number): Promise<void> {
 
   for (const [key, userState] of users) {
     const user = userState.userId ?? key;
+    const lastSeenRequestId = userState.lastSeenRequestId;
 
     try {
+      if (lastSeenRequestId) {
+        const consumed = await isRequestConsumed(lastSeenRequestId);
+
+        // Do not block status sync forever on unconsumed requestIds.
+        // This can happen when user starts multiple requests and only completes an older one.
+        if (!consumed) {
+          const previous = state.users[key]?.lastReviewDecision;
+          if (previous && previous !== "PENDING") {
+            state.users[key] = {
+              ...state.users[key],
+              userId: user,
+              lastReviewDecision: "PENDING",
+              lastSyncAt: new Date().toISOString()
+            };
+          }
+        }
+      }
+
       const status = await getReviewStatusByUserId(user);
       const previous = state.users[key]?.lastReviewDecision;
 
       if (status.decision !== previous) {
         await applyDecision(user, status.decision);
-      } else {
+      } else if (status.decision !== "PENDING") {
         console.log(`user=${user} status unchanged (${status.decision})`);
       }
 

@@ -5,7 +5,7 @@ This package acts as the no-backend server role for Sumsub integration.
 ## Workflows
 
 - `UnifiedWorker` (`src/workflows/worker.ts`)
-  - Pass A: watches `KycSessionBroker.KycRequested`, creates Sumsub SDK token, encrypts it for user key, stores ciphertext onchain.
+  - Pass A: watches `KycSessionBroker.KycRequested`, creates Sumsub SDK token, encrypts it for user session key, stores ciphertext onchain.
   - Pass B: polls Sumsub review status for known users and updates `PassRegistry`:
     - `GREEN` -> `attest(...)`
     - `RED` -> `revoke(...)`
