@@ -372,12 +372,13 @@ export default function App() {
         </h1>
         <p>
           No custom backend: encrypted SDK token packets onchain, CRE workers for issuance and status sync,
-          and policy-gated onchain apps.
+          and policy-gated onchain apps. Provider layer is extensible: Sumsub now, other KYC providers next.
         </p>
         <div className="chip-row">
           <span className="chip">React + Vite</span>
           <span className="chip">Chainlink CRE</span>
           <span className="chip">Sumsub WebSDK</span>
+          <span className="chip">Provider-agnostic</span>
           <span className="chip">No PII onchain</span>
         </div>
       </header>
