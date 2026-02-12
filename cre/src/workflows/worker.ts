@@ -98,10 +98,6 @@ async function runIssueSdkTokenPass(latestBlock: number): Promise<void> {
 
   const events = await readKycRequests(fromBlock, latestBlock);
 
-  if (events.length === 0) {
-    console.log(`IssueSdkToken: no KycRequested events in blocks ${fromBlock}-${latestBlock}`);
-  }
-
   for (const event of events) {
     try {
       await processIssueEvent(event);
@@ -167,21 +163,6 @@ async function applyDecision(user: string, decision: ReviewDecision): Promise<vo
   console.log(`user=${user} still pending`);
 }
 
-async function isRequestConsumed(requestId: string): Promise<boolean> {
-  const broker = getBroker();
-  const packet = await broker.getPacket(BigInt(requestId));
-
-  const ciphertextHex = packet[1] as string;
-  const consumed = Boolean(packet[3]);
-  const exists = Boolean(packet[4]);
-
-  if (!exists || ciphertextHex === "0x") {
-    return false;
-  }
-
-  return consumed;
-}
-
 async function runSyncKycStatusPass(latestBlock: number): Promise<void> {
   const state = readState();
   const fromBlock = resolveFromBlock(state.lastSyncBlock, latestBlock, "SyncKycStatus");
@@ -206,27 +187,8 @@ async function runSyncKycStatusPass(latestBlock: number): Promise<void> {
 
   for (const [key, userState] of users) {
     const user = userState.userId ?? key;
-    const lastSeenRequestId = userState.lastSeenRequestId;
 
     try {
-      if (lastSeenRequestId) {
-        const consumed = await isRequestConsumed(lastSeenRequestId);
-
-        // Do not block status sync forever on unconsumed requestIds.
-        // This can happen when user starts multiple requests and only completes an older one.
-        if (!consumed) {
-          const previous = state.users[key]?.lastReviewDecision;
-          if (previous && previous !== "PENDING") {
-            state.users[key] = {
-              ...state.users[key],
-              userId: user,
-              lastReviewDecision: "PENDING",
-              lastSyncAt: new Date().toISOString()
-            };
-          }
-        }
-      }
-
       const status = await getReviewStatusByUserId(user);
       const previous = state.users[key]?.lastReviewDecision;
 
@@ -265,15 +227,31 @@ async function main() {
     return;
   }
 
-  console.log(`Unified CRE worker started with interval=${config.pollIntervalMs}ms`);
+  console.log(
+    `Unified CRE worker started with issueInterval=${config.pollIntervalMs}ms syncInterval=${config.syncPollIntervalMs}ms`
+  );
+  let lastSyncAt = 0;
+
   while (true) {
+    const loopStartedAt = Date.now();
     try {
-      await runOnce();
+      const provider = getProvider();
+      const latest = await provider.getBlockNumber();
+
+      await runIssueSdkTokenPass(latest);
+
+      const now = Date.now();
+      if (lastSyncAt === 0 || now - lastSyncAt >= config.syncPollIntervalMs) {
+        await runSyncKycStatusPass(latest);
+        lastSyncAt = Date.now();
+      }
     } catch (err) {
       console.error("Unified CRE loop error:", err);
     }
 
-    await sleep(config.pollIntervalMs);
+    const elapsedMs = Date.now() - loopStartedAt;
+    const sleepMs = Math.max(0, config.pollIntervalMs - elapsedMs);
+    await sleep(sleepMs);
   }
 }
 

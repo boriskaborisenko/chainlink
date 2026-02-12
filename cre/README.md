@@ -14,6 +14,8 @@ This package acts as the no-backend server role for Sumsub integration.
 ## Run
 
 1. Copy `.env.example` to `.env` and fill contract addresses + Sumsub credentials.
+   - `POLL_INTERVAL_MS` controls how fast `KycRequested` events are picked up (recommended `5000` for local demo).
+   - `SYNC_POLL_INTERVAL_MS` controls how often Sumsub statuses are synced (recommended `30000-120000`).
 2. Start single worker:
 
 ```bash

@@ -71,6 +71,8 @@ npm run deploy:local -w contracts
 npm run dev:worker -w cre
 ```
 
+For local UX, use fast issue polling (`POLL_INTERVAL_MS=5000`) and slower status polling (`SYNC_POLL_INTERVAL_MS=30000-120000`) in `cre/.env`.
+
 8. Start frontend:
 
 ```bash

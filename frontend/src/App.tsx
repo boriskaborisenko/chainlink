@@ -88,6 +88,7 @@ export default function App() {
   const [creIssuerAllowed, setCreIssuerAllowed] = useState<boolean | null>(null);
   const [pendingDecrypt, setPendingDecrypt] = useState<PendingDecryptPacket | null>(null);
   const [sessionSecretKeyHex, setSessionSecretKeyHex] = useState<string>("");
+  const [waitingPacket, setWaitingPacket] = useState<boolean>(false);
 
   const provider = useMemo(() => {
     if (!window.ethereum) {
@@ -264,7 +265,7 @@ export default function App() {
       }
 
       setStatus(`Waiting encrypted SDK token for request ${reqId.toString()}...`);
-      await sleep(4000);
+      await sleep(1000);
     }
 
     throw new Error("Timed out waiting for encrypted SDK token from CRE");
@@ -295,63 +296,30 @@ export default function App() {
     sdk.launch("#sumsub-websdk-container");
   }
 
-  async function decryptPendingToken() {
-    if (!provider) {
-      setError("Provider unavailable");
-      return;
-    }
-
-    if (!pendingDecrypt) {
-      setError("No encrypted token is waiting for decryption");
-      return;
+  async function autoDecryptAndLaunch(packet: PendingDecryptPacket): Promise<void> {
+    const now = Math.floor(Date.now() / 1000);
+    if (packet.expiresAt > 0 && packet.expiresAt < now) {
+      throw new Error("SDK token packet expired. Start verification again.");
     }
 
     if (!sessionSecretKeyHex) {
-      setError("Missing local session secret key. Click Enable encryption and start verification again.");
-      return;
+      throw new Error("Missing local session secret key. Click Enable encryption and start verification again.");
     }
 
-    setBusy(true);
-    setError("");
-
-    try {
-      const onExpectedNetwork = await ensureExpectedNetwork();
-      if (!onExpectedNetwork) {
-        return;
-      }
-
-      const now = Math.floor(Date.now() / 1000);
-      if (pendingDecrypt.expiresAt > 0 && pendingDecrypt.expiresAt < now) {
-        throw new Error("SDK token packet expired. Start verification again.");
-      }
-
-      const { signer, address } = await getActiveSignerAndAddress();
-      if (address.toLowerCase() !== pendingDecrypt.owner.toLowerCase()) {
-        throw new Error(
-          `Wrong wallet for decrypt. Switch to ${shortAddress(pendingDecrypt.owner)} and try Decrypt SDK token again.`
-        );
-      }
-
-      const decryptedToken = decryptSessionCiphertextHex(pendingDecrypt.ciphertextHex, sessionSecretKeyHex);
-
-      const preview = `${decryptedToken.slice(0, 8)}...${decryptedToken.slice(-6)}`;
-      setSdkTokenPreview(preview);
-      setStatus(`SDK token decrypted (expiresAt=${pendingDecrypt.expiresAt}), launching Sumsub...`);
-
-      launchSumsub(decryptedToken);
-
-      const { broker } = makeContracts(signer);
-      const txConsume = await broker.markConsumed(BigInt(pendingDecrypt.requestId));
-      await txConsume.wait();
-
-      setPendingDecrypt(null);
-      setStatus("Token consumed onchain. Complete Sumsub flow, then press Refresh status.");
-      await refreshOnchainData(address);
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setBusy(false);
+    if (!account || account.toLowerCase() !== packet.owner.toLowerCase()) {
+      throw new Error(`Wrong wallet for auto-decrypt. Switch to ${shortAddress(packet.owner)}.`);
     }
+
+    const decryptedToken = decryptSessionCiphertextHex(packet.ciphertextHex, sessionSecretKeyHex);
+    const preview = `${decryptedToken.slice(0, 8)}...${decryptedToken.slice(-6)}`;
+
+    setSdkTokenPreview(preview);
+    setPendingDecrypt(null);
+    setStatus(`SDK token decrypted (expiresAt=${packet.expiresAt}), launching Sumsub...`);
+
+    launchSumsub(decryptedToken);
+    setStatus("Sumsub started automatically. Complete verification flow, then press Refresh status.");
+    await refreshOnchainData(packet.owner);
   }
 
   async function startVerification() {
@@ -406,18 +374,32 @@ export default function App() {
       setRequestId(newRequestId.toString());
       setSdkTokenPreview("-");
       setPendingDecrypt(null);
-      setStatus(`KYC request submitted (#${newRequestId.toString()})`);
+      setWaitingPacket(true);
+      setStatus(`KYC request submitted (#${newRequestId.toString()}). Waiting for CRE packet...`);
 
-      const packet = await pollEncryptedPacket(newRequestId);
-      setPendingDecrypt({
-        requestId: newRequestId.toString(),
-        ciphertextHex: packet.ciphertextHex,
-        expiresAt: packet.expiresAt,
-        owner: address
-      });
-      setStatus("Encrypted SDK token received. Click Decrypt SDK token.");
+      void (async () => {
+        try {
+          const packet = await pollEncryptedPacket(newRequestId);
+          const pendingPacket = {
+            requestId: newRequestId.toString(),
+            ciphertextHex: packet.ciphertextHex,
+            expiresAt: packet.expiresAt,
+            owner: address
+          };
+
+          setPendingDecrypt(pendingPacket);
+          setStatus("Encrypted SDK token received. Decrypting locally...");
+          await autoDecryptAndLaunch(pendingPacket);
+        } catch (pollErr) {
+          setError((pollErr as Error).message);
+          setStatus("Could not auto-decrypt token. Press Start verification again.");
+        } finally {
+          setWaitingPacket(false);
+        }
+      })();
     } catch (err) {
       setError((err as Error).message);
+      setWaitingPacket(false);
     } finally {
       setBusy(false);
     }
@@ -549,7 +531,7 @@ export default function App() {
                   <p className="step-note">Request session, wait CRE token packet, decrypt token locally in browser.</p>
                 </div>
                 <span className="step-badge">
-                  {hasSdkToken ? "done" : waitingDecrypt ? "decrypt now" : hasRequest ? "waiting CRE" : "pending"}
+                  {hasSdkToken ? "done" : waitingPacket ? "waiting CRE" : waitingDecrypt ? "retry" : hasRequest ? "pending" : "pending"}
                 </span>
               </article>
 
@@ -571,24 +553,21 @@ export default function App() {
             <button className="btn" onClick={() => refreshOnchainData()} disabled={busy || !account || networkMismatch}>
               Refresh status
             </button>
-            <button className="btn" onClick={enableEncryption} disabled={busy || !account || networkMismatch || waitingDecrypt}>
+            <button
+              className="btn"
+              onClick={enableEncryption}
+              disabled={busy || !account || networkMismatch || waitingPacket}
+            >
               Enable encryption
             </button>
             <button
               className="btn strong"
               onClick={startVerification}
-              disabled={busy || !account || !encryptionReady || networkMismatch || waitingDecrypt}
+              disabled={busy || !account || !encryptionReady || networkMismatch || waitingPacket}
             >
               Start verification
             </button>
           </div>
-          {pendingDecrypt ? (
-            <div className="button-grid one">
-              <button className="btn strong" onClick={decryptPendingToken} disabled={busy || networkMismatch}>
-                Decrypt SDK token
-              </button>
-            </div>
-          ) : null}
 
           <div className="level-lock">
             <span className="level-label">KYC Level (ENV)</span>

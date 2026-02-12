@@ -42,7 +42,11 @@ export const config = {
     process.env.SUMSUB_STATUS_PATH_TEMPLATE ?? "/resources/applicants/-;externalUserId={userId}/one",
   defaultLevelName: process.env.KYC_LEVEL_NAME ?? process.env.DEFAULT_LEVEL_NAME ?? "basic-kyc",
   tokenTtlSeconds: numberEnv("TOKEN_TTL_SECONDS", 600),
-  pollIntervalMs: numberEnv("POLL_INTERVAL_MS", 120000),
+  // Fast loop for onchain KycRequested -> SDK packet delivery.
+  // Keep POLL_INTERVAL_MS name for backward compatibility.
+  pollIntervalMs: numberEnv("POLL_INTERVAL_MS", 5000),
+  // Slower Sumsub status sync cadence to avoid excessive provider/API calls.
+  syncPollIntervalMs: numberEnv("SYNC_POLL_INTERVAL_MS", 120000),
   attestationExpirationDays: numberEnv("ATTESTATION_EXPIRATION_DAYS", 180),
   flagHuman: BigInt(numberEnv("FLAG_HUMAN", 1)),
   stateFile: process.env.STATE_FILE ?? ".cre-state.json"
