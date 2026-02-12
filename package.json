@@ -1,0 +1,15 @@
+{
+  "name": "passstore-sumsub-monorepo",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "contracts",
+    "cre",
+    "frontend"
+  ],
+  "scripts": {
+    "build": "npm run check:solcjs -w contracts && npm run build -w cre && npm run build -w frontend",
+    "test": "npm run test -w contracts",
+    "lint": "npm run lint -w contracts && npm run lint -w cre && npm run lint -w frontend"
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "name": "passstore-contracts",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "compile": "HOME=./.home XDG_CONFIG_HOME=./.xdg hardhat compile",
+    "build": "HOME=./.home XDG_CONFIG_HOME=./.xdg hardhat compile",
+    "test": "HOME=./.home XDG_CONFIG_HOME=./.xdg hardhat test",
+    "lint": "echo 'No lint configured for contracts'",
+    "check:solcjs": "solcjs contracts/PassRegistry.sol contracts/KycSessionBroker.sol contracts/AccessPass.sol contracts/ClaimDrop.sol --base-path contracts --include-path contracts --bin -o .check",
+    "deploy:local": "HOME=./.home XDG_CONFIG_HOME=./.xdg hardhat run scripts/deploy.ts --network localhost",
+    "deploy:sepolia": "HOME=./.home XDG_CONFIG_HOME=./.xdg hardhat run scripts/deploy.ts --network sepolia"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "@types/node": "^20.17.57",
+    "dotenv": "^16.4.7",
+    "hardhat": "^2.22.18",
+    "solc": "^0.8.24",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.3"
+  }
+}
