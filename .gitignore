@@ -14,3 +14,6 @@ contracts/typechain-types
 contracts/.check
 contracts/.home
 contracts/.xdg
+CRE_GO/.gocache
+CRE_GO/.gomodcache
+CRE_GO/.gopath
