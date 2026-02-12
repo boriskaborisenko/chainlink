@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "scripts": {
+    "node:local": "HOME=./.home XDG_CONFIG_HOME=./.xdg TS_NODE_PROJECT=./tsconfig.json hardhat node",
     "compile": "HOME=./.home XDG_CONFIG_HOME=./.xdg hardhat compile",
     "build": "HOME=./.home XDG_CONFIG_HOME=./.xdg hardhat compile",
     "test": "HOME=./.home XDG_CONFIG_HOME=./.xdg hardhat test",

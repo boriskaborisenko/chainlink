@@ -27,7 +27,7 @@ npm install
 2. Start local chain:
 
 ```bash
-npx hardhat node --config contracts/hardhat.config.ts
+npm run node:local -w contracts
 ```
 
 3. Configure env files:
