@@ -48,13 +48,38 @@ func main() {
 		return
 	}
 
-	log.Printf("Unified CRE_GO worker started with interval=%dms", cfg.PollIntervalMS)
-	ticker := time.NewTicker(time.Duration(cfg.PollIntervalMS) * time.Millisecond)
-	defer ticker.Stop()
+	log.Printf("Unified CRE_GO worker started with issueInterval=%dms syncInterval=%dms", cfg.PollIntervalMS, cfg.SyncPollIntervalMS)
+	lastSyncAt := time.Time{}
 
 	for {
-		run()
-		<-ticker.C
+		loopStartedAt := time.Now()
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+
+		latest, err := chain.LatestBlock(ctx)
+		if err != nil {
+			log.Printf("Unified worker run error: latest block: %v", err)
+			cancel()
+		} else {
+			if err := runIssuePass(ctx, cfg, chain, sumClient, latest, nil); err != nil {
+				log.Printf("issue pass error: %v", err)
+			}
+
+			now := time.Now()
+			if lastSyncAt.IsZero() || now.Sub(lastSyncAt) >= time.Duration(cfg.SyncPollIntervalMS)*time.Millisecond {
+				if err := runSyncPass(ctx, cfg, chain, sumClient, latest, nil); err != nil {
+					log.Printf("sync pass error: %v", err)
+				} else {
+					lastSyncAt = time.Now()
+				}
+			}
+			cancel()
+		}
+
+		elapsed := time.Since(loopStartedAt)
+		sleepFor := time.Duration(cfg.PollIntervalMS)*time.Millisecond - elapsed
+		if sleepFor > 0 {
+			time.Sleep(sleepFor)
+		}
 	}
 }
 
@@ -80,6 +105,21 @@ func runOnce(ctx context.Context, cfg config.Config, chain *eth.Clients, sumClie
 	return state.Write(cfg.StateFile, st)
 }
 
+func readStateForPass(cfg config.Config, st *state.WorkflowState) (state.WorkflowState, error) {
+	if st != nil {
+		return *st, nil
+	}
+	return state.Read(cfg.StateFile)
+}
+
+func writeStateForPass(cfg config.Config, next state.WorkflowState, st *state.WorkflowState) error {
+	if st != nil {
+		*st = next
+		return nil
+	}
+	return state.Write(cfg.StateFile, next)
+}
+
 func runIssuePass(
 	ctx context.Context,
 	cfg config.Config,
@@ -88,11 +128,21 @@ func runIssuePass(
 	latest uint64,
 	st *state.WorkflowState,
 ) error {
+	currentState, err := readStateForPass(cfg, st)
+	if err != nil {
+		return err
+	}
+
 	fromBlock := uint64(0)
-	if st.LastIssueTokenBlock > 0 {
-		fromBlock = st.LastIssueTokenBlock + 1
+	if currentState.LastIssueTokenBlock > 0 {
+		fromBlock = currentState.LastIssueTokenBlock + 1
 	} else if latest > 2000 {
 		fromBlock = latest - 2000
+	}
+
+	if fromBlock > latest {
+		currentState.LastIssueTokenBlock = latest
+		return writeStateForPass(cfg, currentState, st)
 	}
 
 	events, err := chain.QueryKycRequested(ctx, fromBlock, latest)
@@ -100,18 +150,14 @@ func runIssuePass(
 		return err
 	}
 
-	if len(events) == 0 {
-		log.Printf("Issue pass: no KycRequested events in blocks %d-%d", fromBlock, latest)
-	}
-
 	for _, ev := range events {
-		if err := processIssueEvent(ctx, cfg, chain, sumClient, ev, st); err != nil {
+		if err := processIssueEvent(ctx, cfg, chain, sumClient, ev, &currentState); err != nil {
 			log.Printf("issue event requestId=%s failed: %v", ev.RequestID.String(), err)
 		}
 	}
 
-	st.LastIssueTokenBlock = latest
-	return nil
+	currentState.LastIssueTokenBlock = latest
+	return writeStateForPass(cfg, currentState, st)
 }
 
 func processIssueEvent(
@@ -139,6 +185,15 @@ func processIssueEvent(
 		log.Printf("user=%s has no encryption key, skipping requestId=%s", ev.User.Hex(), ev.RequestID.String())
 		return nil
 	}
+	if len(pubKeyBytes) != 32 {
+		log.Printf(
+			"user=%s has invalid encryption key length=%d, skipping requestId=%s",
+			ev.User.Hex(),
+			len(pubKeyBytes),
+			ev.RequestID.String(),
+		)
+		return nil
+	}
 
 	if ev.LevelName != "" && ev.LevelName != cfg.KYCLevelName {
 		log.Printf("requestId=%s event level '%s' overridden by ENV level '%s'", ev.RequestID.String(), ev.LevelName, cfg.KYCLevelName)
@@ -149,7 +204,7 @@ func processIssueEvent(
 		return err
 	}
 
-	ciphertext, err := cryptobox.EncryptForMetaMask(string(pubKeyBytes), token)
+	ciphertext, err := cryptobox.EncryptForSessionKey(pubKeyBytes, token)
 	if err != nil {
 		return err
 	}
@@ -182,31 +237,38 @@ func runSyncPass(
 	latest uint64,
 	st *state.WorkflowState,
 ) error {
-	fromBlock := uint64(0)
-	if st.LastSyncBlock > 0 {
-		fromBlock = st.LastSyncBlock + 1
-	} else if latest > 2000 {
-		fromBlock = latest - 2000
-	}
-
-	recentRequests, err := chain.QueryKycRequested(ctx, fromBlock, latest)
+	currentState, err := readStateForPass(cfg, st)
 	if err != nil {
 		return err
 	}
 
-	for _, ev := range recentRequests {
-		key := strings.ToLower(ev.User.Hex())
-		u := st.Users[key]
-		u.UserID = ev.User.Hex()
-		u.LastSeenRequestID = ev.RequestID.String()
-		st.Users[key] = u
+	fromBlock := uint64(0)
+	if currentState.LastSyncBlock > 0 {
+		fromBlock = currentState.LastSyncBlock + 1
+	} else if latest > 2000 {
+		fromBlock = latest - 2000
 	}
 
-	if len(st.Users) == 0 {
+	if fromBlock <= latest {
+		recentRequests, err := chain.QueryKycRequested(ctx, fromBlock, latest)
+		if err != nil {
+			return err
+		}
+
+		for _, ev := range recentRequests {
+			key := strings.ToLower(ev.User.Hex())
+			u := currentState.Users[key]
+			u.UserID = ev.User.Hex()
+			u.LastSeenRequestID = ev.RequestID.String()
+			currentState.Users[key] = u
+		}
+	}
+
+	if len(currentState.Users) == 0 {
 		log.Printf("Sync pass: no users to check yet")
 	}
 
-	for key, userState := range st.Users {
+	for key, userState := range currentState.Users {
 		userID := userState.UserID
 		if userID == "" {
 			userID = key
@@ -223,19 +285,19 @@ func runSyncPass(
 				log.Printf("apply decision failed user=%s: %v", userID, err)
 				continue
 			}
-		} else {
+		} else if decision != sumsub.DecisionPending {
 			log.Printf("user=%s status unchanged (%s)", userID, decision)
 		}
 
-		u := st.Users[key]
+		u := currentState.Users[key]
 		u.UserID = userID
 		u.LastReviewDecision = state.ReviewDecision(decision)
 		u = state.TouchSyncTime(u)
-		st.Users[key] = u
+		currentState.Users[key] = u
 	}
 
-	st.LastSyncBlock = latest
-	return nil
+	currentState.LastSyncBlock = latest
+	return writeStateForPass(cfg, currentState, st)
 }
 
 func applyDecision(ctx context.Context, cfg config.Config, chain *eth.Clients, userID string, decision sumsub.ReviewDecision) error {

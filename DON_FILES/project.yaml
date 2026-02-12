@@ -1,0 +1,20 @@
+# CRE target configuration
+# Docs: https://docs.chain.link/cre/reference/project-setup
+
+staging-settings:
+  rpcs:
+    - chain-name: ethereum-testnet-sepolia
+      # Replace with your own RPC
+      url: https://ethereum-sepolia-rpc.publicnode.com
+
+production-settings:
+  account:
+    # Optional for multisig owner model
+    workflow-owner-address: ""
+  rpcs:
+    - chain-name: ethereum-mainnet
+      # Required for workflow registry txs (deploy/activate)
+      url: https://ethereum-rpc.publicnode.com
+    - chain-name: ethereum-testnet-sepolia
+      # Where your PassRegistry/KycSessionBroker are deployed
+      url: https://ethereum-sepolia-rpc.publicnode.com

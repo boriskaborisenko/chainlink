@@ -21,6 +21,7 @@ type Config struct {
 	KYCLevelName          string
 	TokenTTLSeconds       int
 	PollIntervalMS        int
+	SyncPollIntervalMS    int
 	AttestationExpiryDays int
 	FlagHuman             uint64
 	StateFile             string
@@ -56,7 +57,8 @@ func Load() (Config, error) {
 	cfg.SumsubStatusPathTmpl = optional("SUMSUB_STATUS_PATH_TEMPLATE", "/resources/applicants/-;externalUserId={userId}/one")
 	cfg.KYCLevelName = optional("KYC_LEVEL_NAME", optional("DEFAULT_LEVEL_NAME", "basic-kyc"))
 	cfg.TokenTTLSeconds = optionalInt("TOKEN_TTL_SECONDS", 600)
-	cfg.PollIntervalMS = optionalInt("POLL_INTERVAL_MS", 120000)
+	cfg.PollIntervalMS = optionalInt("POLL_INTERVAL_MS", 5000)
+	cfg.SyncPollIntervalMS = optionalInt("SYNC_POLL_INTERVAL_MS", 120000)
 	cfg.AttestationExpiryDays = optionalInt("ATTESTATION_EXPIRATION_DAYS", 180)
 	cfg.FlagHuman = uint64(optionalInt("FLAG_HUMAN", 1))
 	cfg.StateFile = optional("STATE_FILE", ".cre-go-state.json")

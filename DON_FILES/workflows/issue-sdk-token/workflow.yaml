@@ -1,0 +1,12 @@
+# DON workflow descriptor (template)
+# If your CLI template differs, keep this file as reference and align field names with `cre init` output.
+
+user-workflow:
+  path: ./main.ts
+  workflows:
+    staging-settings:
+      workflow-name: passstore-issue-sdk-token-staging
+      config-file: ./config.staging.json
+    production-settings:
+      workflow-name: passstore-issue-sdk-token
+      config-file: ./config.production.json

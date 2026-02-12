@@ -76,6 +76,9 @@ func (c *Client) GetReviewDecisionByUserID(ctx context.Context, userID string) (
 	path := strings.ReplaceAll(c.statusPathTmpl, "{userId}", url.QueryEscape(userID))
 	resp, err := c.request(ctx, http.MethodGet, path, nil)
 	if err != nil {
+		if isApplicantNotFoundError(err) {
+			return DecisionPending, nil
+		}
 		return DecisionPending, err
 	}
 
@@ -96,6 +99,11 @@ func (c *Client) GetReviewDecisionByUserID(ctx context.Context, userID string) (
 	}
 
 	return normalizeDecision(reviewStatus), nil
+}
+
+func isApplicantNotFoundError(err error) bool {
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "failed (404)") && strings.Contains(msg, "applicant not found")
 }
 
 func (c *Client) request(ctx context.Context, method, path string, body map[string]interface{}) ([]byte, error) {

@@ -1,0 +1,7 @@
+{
+  "chainSelectorName": "ethereum-testnet-sepolia",
+  "kycBrokerAddress": "0x0000000000000000000000000000000000000000",
+  "kycLevelName": "basic-kyc",
+  "tokenTtlSeconds": 600,
+  "sumsubBaseUrl": "https://api.sumsub.com"
+}
