@@ -16,8 +16,9 @@ The architecture is provider-agnostic: Sumsub is the first integrated KYC provid
 3. User calls `requestKyc(levelName)`.
 4. Unified CRE worker pass `IssueSdkToken` catches `KycRequested`, asks Sumsub for SDK token, encrypts token for user key, writes ciphertext onchain.
 5. Frontend reads ciphertext, decrypts locally with session secret key, and launches Sumsub WebSDK.
-6. The same unified CRE worker then runs pass `SyncKycStatus`, polls Sumsub statuses, and updates `PassRegistry` (`attest`/`revoke`).
-7. Demo contracts (`AccessPass`, `ClaimDrop`) gate calls via `PassRegistry.verifyUser`.
+6. User clicks `Sync + refresh status`, which calls `KycSessionBroker.requestKycSync()` and emits `KycSyncRequested`.
+7. The same unified CRE worker pass `SyncKycStatus` catches `KycSyncRequested`, fetches Sumsub status, and updates `PassRegistry` (`attest`/`revoke`).
+8. Demo contracts (`AccessPass`, `ClaimDrop`) gate calls via `PassRegistry.verifyUser`.
 
 ## Quick Start
 
@@ -38,6 +39,9 @@ npm run node:local -w contracts
 - `contracts/.env.example` -> `contracts/.env`
 - `cre/.env.example` -> `cre/.env`
 - `frontend/.env.example` -> `frontend/.env`
+- optional for WalletConnect in `frontend/.env`:
+  - `VITE_WC_PROJECT_ID`
+  - `VITE_RPC_URL`
 
 4. Deploy contracts:
 
@@ -45,6 +49,8 @@ npm run node:local -w contracts
 npm run compile -w contracts
 npm run deploy:local -w contracts
 ```
+
+If you are upgrading from an older revision, redeploy is required because `KycSessionBroker` ABI changed (`requestKycSync`, `KycSyncRequested`).
 
 5. Copy deployed addresses:
 
@@ -87,7 +93,7 @@ npm run dev -w frontend
 4. Wait for `IssueSdkToken` worker to store ciphertext in broker packet.
 5. Frontend decrypts packet locally with session secret key and launches Sumsub WebSDK.
 6. In Sumsub Sandbox, simulate review result (`GREEN` or `RED`).
-7. Wait for `SyncKycStatus` tick:
+7. Click `Sync + refresh status` (this sends `requestKycSync()` and then polls onchain view):
    - `GREEN` -> `PassRegistry.attest`
    - `RED` -> `PassRegistry.revoke`
 8. Try demo actions:

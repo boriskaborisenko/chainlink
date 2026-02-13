@@ -2,10 +2,10 @@
  * DON template: SyncKycStatus workflow
  *
  * Trigger:
- * - Cron (e.g. every 2 minutes)
+ * - EVM log: KycSyncRequested(syncRequestId, user, requestId)
  *
  * Steps inside callback:
- * 1. Resolve users to check (from recent KycRequested events or dedicated onchain queue)
+ * 1. Parse `user` from KycSyncRequested event payload
  * 2. Read SUMSUB secrets from DON Vault
  * 3. Query Sumsub review status per user
  * 4. Write PassRegistry.attest(...) on GREEN

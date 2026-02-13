@@ -19,5 +19,7 @@ export const env = {
   kycBroker: requireEnv("VITE_KYC_BROKER"),
   accessPass: requireEnv("VITE_ACCESS_PASS"),
   claimDrop: requireEnv("VITE_CLAIM_DROP"),
-  creIssuer: import.meta.env.VITE_CRE_ISSUER as string | undefined
+  creIssuer: import.meta.env.VITE_CRE_ISSUER as string | undefined,
+  walletConnectProjectId: requireEnv("VITE_WC_PROJECT_ID"),
+  rpcUrl: import.meta.env.VITE_RPC_URL as string | undefined
 };

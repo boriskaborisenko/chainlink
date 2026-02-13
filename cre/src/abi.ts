@@ -1,5 +1,6 @@
 export const BROKER_ABI = [
   "event KycRequested(uint256 indexed requestId, address indexed user, string levelName)",
+  "event KycSyncRequested(uint256 indexed syncRequestId, address indexed user, uint256 indexed requestId)",
   "function encryptionPubKey(address user) view returns (bytes)",
   "function getPacket(uint256 requestId) view returns (address user, bytes ciphertext, uint64 expiresAt, bool consumed, bool exists)",
   "function storeEncryptedToken(uint256 requestId, bytes ciphertext, uint64 expiresAt)"

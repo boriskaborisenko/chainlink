@@ -1,5 +1,6 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Contract, BrowserProvider, Interface, ethers } from "ethers";
+import { useAppKit, useAppKitAccount, useAppKitProvider } from "@reown/appkit/react";
 import { passRegistryAbi } from "./abi/passRegistry";
 import { kycBrokerAbi } from "./abi/kycBroker";
 import { accessPassAbi } from "./abi/accessPass";
@@ -33,6 +34,8 @@ type OnchainSnapshot = {
   attestationExists: boolean;
   hasOnchainEncryptionKey: boolean;
 };
+
+type WalletProviderLike = any;
 
 function reasonLabel(reason: number): string {
   switch (reason) {
@@ -99,14 +102,45 @@ export default function App() {
   const [sessionSecretKeyHex, setSessionSecretKeyHex] = useState<string>("");
   const [waitingPacket, setWaitingPacket] = useState<boolean>(false);
   const [sumsubModalOpen, setSumsubModalOpen] = useState<boolean>(false);
+  const { open } = useAppKit();
+  const { address: appKitAddress, isConnected: isAppKitConnected } = useAppKitAccount({ namespace: "eip155" });
+  const { walletProvider } = useAppKitProvider<WalletProviderLike>("eip155");
 
   const provider = useMemo(() => {
-    if (!window.ethereum) {
+    if (!walletProvider) {
       return null;
     }
 
-    return new BrowserProvider(window.ethereum);
-  }, []);
+    return new BrowserProvider(walletProvider as any);
+  }, [walletProvider]);
+
+  useEffect(() => {
+    if (!appKitAddress || !isAppKitConnected) {
+      if (account) {
+        setAccount("");
+        setChainId(0);
+        setSessionSecretKeyHex("");
+        setPendingDecrypt(null);
+        setEncryptionReady(false);
+        setSumsubModalOpen(false);
+        setStatus("Wallet disconnected");
+      }
+
+      return;
+    }
+
+    if (!account || account.toLowerCase() !== appKitAddress.toLowerCase()) {
+      setAccount(appKitAddress);
+      setSessionSecretKeyHex("");
+      setPendingDecrypt(null);
+      setEncryptionReady(false);
+      setSumsubModalOpen(false);
+      setStatus("Wallet connected");
+      window.setTimeout(() => {
+        void refreshOnchainData(appKitAddress);
+      }, 0);
+    }
+  }, [account, appKitAddress, isAppKitConnected, provider]);
 
   async function getActiveSignerAndAddress(): Promise<{ signer: ethers.Signer; address: string }> {
     if (!provider) {
@@ -127,12 +161,13 @@ export default function App() {
     return { signer, address };
   }
 
-  async function ensureExpectedNetwork(): Promise<boolean> {
-    if (!provider) {
+  async function ensureExpectedNetwork(providerOverride?: BrowserProvider): Promise<boolean> {
+    const activeProvider = providerOverride ?? provider;
+    if (!activeProvider) {
       return false;
     }
 
-    const network = await provider.getNetwork();
+    const network = await activeProvider.getNetwork();
     const currentChainId = Number(network.chainId);
     setChainId(currentChainId);
 
@@ -146,31 +181,16 @@ export default function App() {
   }
 
   async function connectWallet() {
-    if (!window.ethereum || !provider) {
-      setError("EVM wallet provider is required");
-      return;
-    }
-
     setBusy(true);
     setError("");
 
     try {
-      const accounts = (await window.ethereum.request({ method: "eth_requestAccounts" })) as string[];
-      const selected = accounts[0] ?? "";
-      setAccount(selected);
-
-      const network = await provider.getNetwork();
-      const currentChainId = Number(network.chainId);
-      setChainId(currentChainId);
-
-      if (env.chainId > 0 && currentChainId !== env.chainId) {
-        setStatus(`Wallet connected, but wrong network (${currentChainId}). Switch to ${env.chainId}.`);
-        setError(`Wrong network: expected chainId ${env.chainId}, got ${currentChainId}`);
-        return;
-      }
-
-      setStatus("Wallet connected");
-      await refreshOnchainData(selected);
+      await open({ view: isAppKitConnected ? "Account" : "Connect" });
+      setStatus(
+        isAppKitConnected
+          ? "Account modal opened. You can switch network or disconnect there."
+          : "AppKit modal opened. Pick MetaMask in the wallet list."
+      );
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -178,8 +198,12 @@ export default function App() {
     }
   }
 
-  async function refreshOnchainData(forAccount?: string): Promise<OnchainSnapshot | null> {
-    if (!provider) {
+  async function refreshOnchainData(
+    forAccount?: string,
+    providerOverride?: BrowserProvider
+  ): Promise<OnchainSnapshot | null> {
+    const activeProvider = providerOverride ?? provider;
+    if (!activeProvider) {
       return null;
     }
 
@@ -188,12 +212,12 @@ export default function App() {
       return null;
     }
 
-    const onExpectedNetwork = await ensureExpectedNetwork();
+    const onExpectedNetwork = await ensureExpectedNetwork(activeProvider);
     if (!onExpectedNetwork) {
       return null;
     }
 
-    const { registry, broker, accessPass, claimDrop } = makeContracts(provider);
+    const { registry, broker, accessPass, claimDrop } = makeContracts(activeProvider);
 
     const [verifyResult, attResult, pubKeyHex, mintedResult, claimedResult] = await Promise.all([
       registry.verifyUser(user, env.policyId),
@@ -347,35 +371,8 @@ export default function App() {
     setStatus(`SDK token decrypted (expiresAt=${packet.expiresAt}), launching Sumsub...`);
 
     launchSumsub(decryptedToken);
-    setStatus("Sumsub started automatically. Complete verification flow, then press Refresh status.");
+    setStatus("Sumsub started automatically. Complete verification flow, then press Sync + refresh status.");
     await refreshOnchainData(packet.owner);
-  }
-
-  async function waitForKycSync(userAddress: string) {
-    setSyncWaiting(true);
-    const maxAttempts = 24;
-
-    try {
-      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-        setStatus(`Waiting CRE sync after Sumsub... ${attempt}/${maxAttempts}`);
-        const snap = await refreshOnchainData(userAddress);
-
-        if (snap?.verify.ok) {
-          setStatus("KYC synced onchain. verifyUser=true, gated actions unlocked.");
-          return;
-        }
-
-        if (attempt < maxAttempts) {
-          await sleep(5000);
-        }
-      }
-
-      setStatus("KYC still pending in CRE sync. You can wait or press Refresh status.");
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setSyncWaiting(false);
-    }
   }
 
   async function submitKycRequest(signer: ethers.Signer, address: string): Promise<void> {
@@ -427,7 +424,6 @@ export default function App() {
         setPendingDecrypt(pendingPacket);
         setStatus("Encrypted SDK token received. Decrypting locally...");
         await autoDecryptAndLaunch(pendingPacket);
-        void waitForKycSync(address);
       } catch (pollErr) {
         setError((pollErr as Error).message);
         setStatus("Could not auto-decrypt token. Press Start verification again.");
@@ -499,6 +495,41 @@ export default function App() {
     }
   }
 
+  async function requestKycSyncFromUser(): Promise<boolean> {
+    if (!provider || !account) {
+      setError("Connect wallet first");
+      return false;
+    }
+
+    const onExpectedNetwork = await ensureExpectedNetwork();
+    if (!onExpectedNetwork) {
+      return false;
+    }
+
+    const { signer } = await getActiveSignerAndAddress();
+    const { broker } = makeContracts(signer);
+
+    try {
+      const tx = await broker.requestKycSync();
+      setStatus("Sync request sent onchain. Waiting for confirmation...");
+      await tx.wait();
+      setStatus("Sync request confirmed. Waiting for CRE status update...");
+      return true;
+    } catch (err) {
+      const message = (err as Error).message;
+      if (message.includes("KycSessionBroker: no kyc request")) {
+        setStatus("No KYC request found yet. Start verification first.");
+        return false;
+      }
+      if (message.includes("KycSessionBroker: sync cooldown")) {
+        setStatus("Sync was requested recently (cooldown). Waiting for CRE update...");
+        return false;
+      }
+
+      throw err;
+    }
+  }
+
   async function refreshStatusWithRetry() {
     if (!provider || !account) {
       setError("Connect wallet first");
@@ -507,6 +538,7 @@ export default function App() {
 
     setBusy(true);
     setRefreshingStatus(true);
+    setSyncWaiting(true);
     setError("");
 
     const initialOk = verify.ok;
@@ -515,6 +547,10 @@ export default function App() {
     let latest: OnchainSnapshot | null = null;
 
     try {
+      if (!verify.ok) {
+        await requestKycSyncFromUser();
+      }
+
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         setStatus(`Refreshing onchain status... ${attempt}/${maxAttempts}`);
         latest = await refreshOnchainData();
@@ -550,6 +586,7 @@ export default function App() {
     } catch (err) {
       setError((err as Error).message);
     } finally {
+      setSyncWaiting(false);
       setRefreshingStatus(false);
       setBusy(false);
     }
@@ -617,6 +654,7 @@ export default function App() {
   const hasRequest = requestId !== "-";
   const hasSdkToken = sdkTokenPreview !== "-";
   const waitingDecrypt = Boolean(pendingDecrypt);
+  const connectButtonLabel = isAppKitConnected ? "Now Connected!" : "Connect wallet";
 
   return (
     <div className="page">
@@ -698,8 +736,8 @@ export default function App() {
                   <article className={`step ${verify.ok ? "done" : hasSdkToken ? "active" : "pending"}`}>
                     <span className="step-index">4</span>
                     <div className="step-content">
-                      <p className="step-title">Complete Sumsub and wait sync</p>
-                      <p className="step-note">After GREEN, verifyUser becomes true and gated actions unlock.</p>
+                      <p className="step-title">Complete Sumsub and request onchain sync</p>
+                      <p className="step-note">After GREEN, press Sync + refresh status to trigger CRE update.</p>
                     </div>
                     <span className="step-badge">{verify.ok ? "done" : hasSdkToken ? "waiting review" : "pending"}</span>
                   </article>
@@ -708,14 +746,14 @@ export default function App() {
 
               <div className="button-grid">
                 <button className="btn strong" onClick={connectWallet} disabled={busy}>
-                  Connect wallet
+                  {connectButtonLabel}
                 </button>
                 <button
                   className="btn"
                   onClick={refreshStatusWithRetry}
                   disabled={busy || !account || networkMismatch || waitingPacket}
                 >
-                  {refreshingStatus ? "Refreshing..." : "Refresh status"}
+                  {refreshingStatus ? "Refreshing..." : "Sync + refresh status"}
                 </button>
                 <button
                   className="btn"
@@ -766,7 +804,7 @@ export default function App() {
                     <span className="step-index">4</span>
                     <div className="step-content">
                       <p className="step-title">Wait onchain sync</p>
-                      <p className="step-note">UI auto-checks status. Manual check is still available.</p>
+                      <p className="step-note">Button sends onchain sync request, then UI waits for updated verifyUser.</p>
                     </div>
                     <span className="step-badge">{verify.ok ? "done" : syncWaiting ? "syncing..." : "pending"}</span>
                   </article>
@@ -775,7 +813,7 @@ export default function App() {
 
               <div className="button-grid quick-grid">
                 <button className="btn strong" onClick={connectWallet} disabled={busy}>
-                  Connect wallet
+                  {connectButtonLabel}
                 </button>
                 <button
                   className={`btn strong quick-cta ${account && !busy && !networkMismatch ? "pulse" : ""}`}
@@ -786,10 +824,12 @@ export default function App() {
                 </button>
               </div>
               <button className="link-btn" onClick={refreshStatusWithRetry} disabled={busy || !account || networkMismatch}>
-                {refreshingStatus ? "Checking status..." : "Check status now"}
+                {refreshingStatus ? "Checking status..." : "Sync + check status"}
               </button>
             </>
           )}
+
+          <p className="muted">Connect wallet opens default AppKit modal (installed wallets are marked there).</p>
 
           <div className="level-lock">
             <span className="level-label">KYC Level (ENV)</span>

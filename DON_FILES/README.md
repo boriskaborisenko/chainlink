@@ -8,7 +8,7 @@
 - `.env.example` - переменные для link-key и CLI-секретов.
 - `secrets.production.yaml` - шаблон загрузки Sumsub секретов в DON Vault.
 - `workflows/issue-sdk-token/` - workflow для события `KycRequested`.
-- `workflows/sync-kyc-status/` - cron workflow для синка статуса KYC.
+- `workflows/sync-kyc-status/` - workflow для синка статуса KYC по событию `KycSyncRequested`.
 - `scripts/deploy-all.sh` - быстрый runbook-команды.
 
 ## Важно

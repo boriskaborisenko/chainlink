@@ -7,6 +7,13 @@ export interface KycRequestEventData {
   blockNumber: number;
 }
 
+export interface KycSyncRequestEventData {
+  syncRequestId: bigint;
+  user: string;
+  requestId: bigint;
+  blockNumber: number;
+}
+
 export interface SumsubTokenResponse {
   token: string;
   userId: string;

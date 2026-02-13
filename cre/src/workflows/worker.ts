@@ -4,7 +4,7 @@ import { encryptForSessionKey } from "../clients/crypto.js";
 import { generateSdkToken, getReviewStatusByUserId } from "../clients/sumsub.js";
 import { config } from "../config.js";
 import { readState, writeState } from "../state.js";
-import { KycRequestEventData, ReviewDecision } from "../types.js";
+import { KycRequestEventData, KycSyncRequestEventData, ReviewDecision } from "../types.js";
 import { shouldLoop, sleep } from "./shared.js";
 
 const LOG_LOOKBACK_BLOCKS = 2000;
@@ -24,6 +24,25 @@ async function readKycRequests(fromBlock: number, toBlock: number): Promise<KycR
     requestId: log.args?.requestId as bigint,
     user: log.args?.user as string,
     levelName: (log.args?.levelName as string) || config.defaultLevelName,
+    blockNumber: log.blockNumber
+  }));
+}
+
+async function readKycSyncRequests(fromBlock: number, toBlock: number): Promise<KycSyncRequestEventData[]> {
+  if (fromBlock > toBlock) {
+    return [];
+  }
+
+  const broker = getBroker();
+  const filter = broker.filters.KycSyncRequested();
+  const logs = await broker.queryFilter(filter, fromBlock, toBlock);
+
+  const eventLogs = logs.filter((log): log is EventLog => "args" in log);
+
+  return eventLogs.map((log) => ({
+    syncRequestId: log.args?.syncRequestId as bigint,
+    user: log.args?.user as string,
+    requestId: log.args?.requestId as bigint,
     blockNumber: log.blockNumber
   }));
 }
@@ -167,26 +186,33 @@ async function runSyncKycStatusPass(latestBlock: number): Promise<void> {
   const state = readState();
   const fromBlock = resolveFromBlock(state.lastSyncBlock, latestBlock, "SyncKycStatus");
 
-  if (fromBlock <= latestBlock) {
-    const recentRequests = await readKycRequests(fromBlock, latestBlock);
-
-    for (const event of recentRequests) {
-      const key = event.user.toLowerCase();
-      state.users[key] = {
-        ...state.users[key],
-        userId: event.user,
-        lastSeenRequestId: event.requestId.toString()
-      };
-    }
+  if (fromBlock > latestBlock) {
+    state.lastSyncBlock = latestBlock;
+    writeState(state);
+    return;
   }
 
-  const users = Object.entries(state.users);
-  if (users.length === 0) {
-    console.log("SyncKycStatus: no users to check yet");
+  const syncEvents = await readKycSyncRequests(fromBlock, latestBlock);
+  if (syncEvents.length === 0) {
+    state.lastSyncBlock = latestBlock;
+    writeState(state);
+    return;
   }
 
-  for (const [key, userState] of users) {
-    const user = userState.userId ?? key;
+  const latestSyncRequestByUser = new Map<string, KycSyncRequestEventData>();
+  for (const event of syncEvents) {
+    const key = event.user.toLowerCase();
+    latestSyncRequestByUser.set(key, event);
+
+    state.users[key] = {
+      ...state.users[key],
+      userId: event.user,
+      lastSeenRequestId: event.requestId.toString()
+    };
+  }
+
+  for (const [key, event] of latestSyncRequestByUser.entries()) {
+    const user = event.user;
 
     try {
       const status = await getReviewStatusByUserId(user);
@@ -201,6 +227,7 @@ async function runSyncKycStatusPass(latestBlock: number): Promise<void> {
       state.users[key] = {
         ...state.users[key],
         userId: user,
+        lastSeenRequestId: event.requestId.toString(),
         lastReviewDecision: status.decision,
         lastSyncAt: new Date().toISOString()
       };
@@ -228,9 +255,8 @@ async function main() {
   }
 
   console.log(
-    `Unified CRE worker started with issueInterval=${config.pollIntervalMs}ms syncInterval=${config.syncPollIntervalMs}ms`
+    `Unified CRE worker started with loopInterval=${config.pollIntervalMs}ms (SyncKycStatus is event-driven via KycSyncRequested)`
   );
-  let lastSyncAt = 0;
 
   while (true) {
     const loopStartedAt = Date.now();
@@ -239,12 +265,7 @@ async function main() {
       const latest = await provider.getBlockNumber();
 
       await runIssueSdkTokenPass(latest);
-
-      const now = Date.now();
-      if (lastSyncAt === 0 || now - lastSyncAt >= config.syncPollIntervalMs) {
-        await runSyncKycStatusPass(latest);
-        lastSyncAt = Date.now();
-      }
+      await runSyncKycStatusPass(latest);
     } catch (err) {
       console.error("Unified CRE loop error:", err);
     }
