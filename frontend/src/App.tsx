@@ -28,6 +28,12 @@ type PendingDecryptPacket = {
   owner: string;
 };
 
+type OnchainSnapshot = {
+  verify: VerifySnapshot;
+  attestationExists: boolean;
+  hasOnchainEncryptionKey: boolean;
+};
+
 function reasonLabel(reason: number): string {
   switch (reason) {
     case 0:
@@ -73,9 +79,12 @@ async function sleep(ms: number): Promise<void> {
 }
 
 export default function App() {
+  const [view, setView] = useState<"classic" | "quick">("classic");
   const [account, setAccount] = useState<string>("");
   const [chainId, setChainId] = useState<number>(0);
   const [busy, setBusy] = useState<boolean>(false);
+  const [refreshingStatus, setRefreshingStatus] = useState<boolean>(false);
+  const [syncWaiting, setSyncWaiting] = useState<boolean>(false);
   const [status, setStatus] = useState<string>("Idle");
   const [error, setError] = useState<string>("");
   const [requestId, setRequestId] = useState<string>("-");
@@ -89,6 +98,7 @@ export default function App() {
   const [pendingDecrypt, setPendingDecrypt] = useState<PendingDecryptPacket | null>(null);
   const [sessionSecretKeyHex, setSessionSecretKeyHex] = useState<string>("");
   const [waitingPacket, setWaitingPacket] = useState<boolean>(false);
+  const [sumsubModalOpen, setSumsubModalOpen] = useState<boolean>(false);
 
   const provider = useMemo(() => {
     if (!window.ethereum) {
@@ -111,6 +121,7 @@ export default function App() {
       setSessionSecretKeyHex("");
       setPendingDecrypt(null);
       setEncryptionReady(false);
+      setSumsubModalOpen(false);
     }
 
     return { signer, address };
@@ -167,19 +178,19 @@ export default function App() {
     }
   }
 
-  async function refreshOnchainData(forAccount?: string) {
+  async function refreshOnchainData(forAccount?: string): Promise<OnchainSnapshot | null> {
     if (!provider) {
-      return;
+      return null;
     }
 
     const user = (forAccount ?? account).toLowerCase();
     if (!user) {
-      return;
+      return null;
     }
 
     const onExpectedNetwork = await ensureExpectedNetwork();
     if (!onExpectedNetwork) {
-      return;
+      return null;
     }
 
     const { registry, broker, accessPass, claimDrop } = makeContracts(provider);
@@ -192,7 +203,8 @@ export default function App() {
       claimDrop.claimed(user)
     ]);
 
-    setVerify({ ok: Boolean(verifyResult[0]), reason: Number(verifyResult[1]) });
+    const verifySnapshot = { ok: Boolean(verifyResult[0]), reason: Number(verifyResult[1]) };
+    setVerify(verifySnapshot);
     setAttestation({
       flags: attResult[0].toString(),
       expiration: Number(attResult[1]),
@@ -213,6 +225,23 @@ export default function App() {
       const allowed = await registry.isIssuer(env.creIssuer);
       setCreIssuerAllowed(Boolean(allowed));
     }
+
+    return {
+      verify: verifySnapshot,
+      attestationExists: Boolean(attResult[7]),
+      hasOnchainEncryptionKey
+    };
+  }
+
+  async function ensureSessionEncryption(signer: ethers.Signer, address: string): Promise<void> {
+    const keyPair = generateSessionKeyPairHex();
+    const { broker } = makeContracts(signer);
+    const tx = await broker.setEncryptionPubKey(keyPair.publicKeyHex);
+    await tx.wait();
+
+    setSessionSecretKeyHex(keyPair.secretKeyHex);
+    setEncryptionReady(true);
+    setStatus(`Session encryption key stored onchain for ${shortAddress(address)}`);
   }
 
   async function enableEncryption() {
@@ -231,15 +260,7 @@ export default function App() {
       }
 
       const { signer, address } = await getActiveSignerAndAddress();
-      const keyPair = generateSessionKeyPairHex();
-
-      const { broker } = makeContracts(signer);
-      const tx = await broker.setEncryptionPubKey(keyPair.publicKeyHex);
-      await tx.wait();
-
-      setSessionSecretKeyHex(keyPair.secretKeyHex);
-      setStatus(`Session encryption key stored onchain for ${shortAddress(address)}`);
-      setEncryptionReady(true);
+      await ensureSessionEncryption(signer, address);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -277,23 +298,31 @@ export default function App() {
       return;
     }
 
-    const sdk = window.snsWebSdk
-      .init(token, async () => token)
-      .withConf({
-        lang: "en",
-        email: "",
-        phone: ""
-      })
-      .withOptions({
-        addViewportTag: false,
-        adaptIframeHeight: true
-      })
-      .on("idCheck.onApplicantStatusChanged", (payload: unknown) => {
-        console.log("Sumsub status update", payload);
-      })
-      .build();
+    setSumsubModalOpen(true);
 
-    sdk.launch("#sumsub-websdk-container");
+    window.setTimeout(() => {
+      if (!window.snsWebSdk) {
+        return;
+      }
+
+      const sdk = window.snsWebSdk
+        .init(token, async () => token)
+        .withConf({
+          lang: "en",
+          email: "",
+          phone: ""
+        })
+        .withOptions({
+          addViewportTag: false,
+          adaptIframeHeight: true
+        })
+        .on("idCheck.onApplicantStatusChanged", (payload: unknown) => {
+          console.log("Sumsub status update", payload);
+        })
+        .build();
+
+      sdk.launch("#sumsub-modal-container");
+    }, 25);
   }
 
   async function autoDecryptAndLaunch(packet: PendingDecryptPacket): Promise<void> {
@@ -322,6 +351,92 @@ export default function App() {
     await refreshOnchainData(packet.owner);
   }
 
+  async function waitForKycSync(userAddress: string) {
+    setSyncWaiting(true);
+    const maxAttempts = 24;
+
+    try {
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        setStatus(`Waiting CRE sync after Sumsub... ${attempt}/${maxAttempts}`);
+        const snap = await refreshOnchainData(userAddress);
+
+        if (snap?.verify.ok) {
+          setStatus("KYC synced onchain. verifyUser=true, gated actions unlocked.");
+          return;
+        }
+
+        if (attempt < maxAttempts) {
+          await sleep(5000);
+        }
+      }
+
+      setStatus("KYC still pending in CRE sync. You can wait or press Refresh status.");
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSyncWaiting(false);
+    }
+  }
+
+  async function submitKycRequest(signer: ethers.Signer, address: string): Promise<void> {
+    const { broker } = makeContracts(signer);
+    setSyncWaiting(false);
+
+    const tx = await broker.requestKyc(env.kycLevelName);
+    const receipt = await tx.wait();
+
+    const iface = new Interface(kycBrokerAbi);
+    let newRequestId: bigint | null = null;
+
+    for (const log of receipt?.logs ?? []) {
+      if (log.address.toLowerCase() !== env.kycBroker.toLowerCase()) {
+        continue;
+      }
+
+      try {
+        const parsed = iface.parseLog(log);
+        if (parsed?.name === "KycRequested") {
+          newRequestId = parsed.args.requestId as bigint;
+          break;
+        }
+      } catch {
+        // Skip logs from other contracts.
+      }
+    }
+
+    if (newRequestId === null) {
+      throw new Error("Could not read requestId from tx logs");
+    }
+
+    setRequestId(newRequestId.toString());
+    setSdkTokenPreview("-");
+    setPendingDecrypt(null);
+    setWaitingPacket(true);
+    setStatus(`KYC request submitted (#${newRequestId.toString()}). Waiting for CRE packet...`);
+
+    void (async () => {
+      try {
+        const packet = await pollEncryptedPacket(newRequestId);
+        const pendingPacket = {
+          requestId: newRequestId.toString(),
+          ciphertextHex: packet.ciphertextHex,
+          expiresAt: packet.expiresAt,
+          owner: address
+        };
+
+        setPendingDecrypt(pendingPacket);
+        setStatus("Encrypted SDK token received. Decrypting locally...");
+        await autoDecryptAndLaunch(pendingPacket);
+        void waitForKycSync(address);
+      } catch (pollErr) {
+        setError((pollErr as Error).message);
+        setStatus("Could not auto-decrypt token. Press Start verification again.");
+      } finally {
+        setWaitingPacket(false);
+      }
+    })();
+  }
+
   async function startVerification() {
     if (!provider || !account) {
       setError("Connect wallet first");
@@ -343,64 +458,99 @@ export default function App() {
       }
 
       const { signer, address } = await getActiveSignerAndAddress();
-      const { broker } = makeContracts(signer);
-
-      const tx = await broker.requestKyc(env.kycLevelName);
-      const receipt = await tx.wait();
-
-      const iface = new Interface(kycBrokerAbi);
-      let newRequestId: bigint | null = null;
-
-      for (const log of receipt?.logs ?? []) {
-        if (log.address.toLowerCase() !== env.kycBroker.toLowerCase()) {
-          continue;
-        }
-
-        try {
-          const parsed = iface.parseLog(log);
-          if (parsed?.name === "KycRequested") {
-            newRequestId = parsed.args.requestId as bigint;
-            break;
-          }
-        } catch {
-          // Skip logs from other contracts.
-        }
-      }
-
-      if (newRequestId === null) {
-        throw new Error("Could not read requestId from tx logs");
-      }
-
-      setRequestId(newRequestId.toString());
-      setSdkTokenPreview("-");
-      setPendingDecrypt(null);
-      setWaitingPacket(true);
-      setStatus(`KYC request submitted (#${newRequestId.toString()}). Waiting for CRE packet...`);
-
-      void (async () => {
-        try {
-          const packet = await pollEncryptedPacket(newRequestId);
-          const pendingPacket = {
-            requestId: newRequestId.toString(),
-            ciphertextHex: packet.ciphertextHex,
-            expiresAt: packet.expiresAt,
-            owner: address
-          };
-
-          setPendingDecrypt(pendingPacket);
-          setStatus("Encrypted SDK token received. Decrypting locally...");
-          await autoDecryptAndLaunch(pendingPacket);
-        } catch (pollErr) {
-          setError((pollErr as Error).message);
-          setStatus("Could not auto-decrypt token. Press Start verification again.");
-        } finally {
-          setWaitingPacket(false);
-        }
-      })();
+      await submitKycRequest(signer, address);
     } catch (err) {
       setError((err as Error).message);
       setWaitingPacket(false);
     } finally {
+      setBusy(false);
+    }
+  }
+
+  async function goToKyc() {
+    if (!provider || !account) {
+      setError("Connect wallet first");
+      return;
+    }
+
+    setBusy(true);
+    setError("");
+
+    try {
+      const onExpectedNetwork = await ensureExpectedNetwork();
+      if (!onExpectedNetwork) {
+        return;
+      }
+
+      const { signer, address } = await getActiveSignerAndAddress();
+
+      if (!encryptionReady || !sessionSecretKeyHex) {
+        setStatus("Preparing session key...");
+        await ensureSessionEncryption(signer, address);
+      }
+
+      setStatus("Session key ready. Submitting KYC request...");
+      await submitKycRequest(signer, address);
+    } catch (err) {
+      setError((err as Error).message);
+      setWaitingPacket(false);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function refreshStatusWithRetry() {
+    if (!provider || !account) {
+      setError("Connect wallet first");
+      return;
+    }
+
+    setBusy(true);
+    setRefreshingStatus(true);
+    setError("");
+
+    const initialOk = verify.ok;
+    const initialReason = verify.reason;
+    const maxAttempts = 8;
+    let latest: OnchainSnapshot | null = null;
+
+    try {
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        setStatus(`Refreshing onchain status... ${attempt}/${maxAttempts}`);
+        latest = await refreshOnchainData();
+
+        if (!latest) {
+          break;
+        }
+
+        if (latest.verify.ok || latest.verify.ok !== initialOk || latest.verify.reason !== initialReason) {
+          break;
+        }
+
+        if (attempt < maxAttempts) {
+          await sleep(2200);
+        }
+      }
+
+      if (!latest) {
+        return;
+      }
+
+      if (latest.verify.ok) {
+        setStatus("Onchain status updated: verifyUser=true.");
+        return;
+      }
+
+      if (latest.verify.ok !== initialOk || latest.verify.reason !== initialReason) {
+        setStatus(`Onchain status changed: ${reasonLabel(latest.verify.reason)}.`);
+        return;
+      }
+
+      setStatus("No new onchain update yet. CRE sync may still be pending.");
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setRefreshingStatus(false);
       setBusy(false);
     }
   }
@@ -492,6 +642,14 @@ export default function App() {
           <span className="chip">Provider-agnostic</span>
           <span className="chip">No PII onchain</span>
         </div>
+        <div className="view-switch">
+          <button className={`switch-btn ${view === "classic" ? "active" : ""}`} onClick={() => setView("classic")}>
+            Classic Flow
+          </button>
+          <button className={`switch-btn ${view === "quick" ? "active" : ""}`} onClick={() => setView("quick")}>
+            Quick KYC
+          </button>
+        </div>
       </header>
 
       <div className="layout">
@@ -503,71 +661,135 @@ export default function App() {
             </span>
           </div>
 
-          <div className="flow-block">
-            <h3>Sequence</h3>
-            <div className="steps">
-              <article className={`step ${account && !networkMismatch ? "done" : account ? "warn" : "active"}`}>
-                <span className="step-index">1</span>
-                <div className="step-content">
-                  <p className="step-title">Connect wallet on chain {expectedChainId || "31337"}</p>
-                  <p className="step-note">Use Localhost 8545 / chainId 31337 for this demo.</p>
-                </div>
-                <span className="step-badge">{account ? (networkMismatch ? "wrong network" : "done") : "now"}</span>
-              </article>
+          {view === "classic" ? (
+            <>
+              <div className="flow-block">
+                <h3>Sequence</h3>
+                <div className="steps">
+                  <article className={`step ${account && !networkMismatch ? "done" : account ? "warn" : "active"}`}>
+                    <span className="step-index">1</span>
+                    <div className="step-content">
+                      <p className="step-title">Connect wallet on chain {expectedChainId || "31337"}</p>
+                      <p className="step-note">Use Localhost 8545 / chainId 31337 for this demo.</p>
+                    </div>
+                    <span className="step-badge">{account ? (networkMismatch ? "wrong network" : "done") : "now"}</span>
+                  </article>
 
-              <article className={`step ${encryptionReady ? "done" : account ? "active" : "pending"}`}>
-                <span className="step-index">2</span>
-                <div className="step-content">
-                  <p className="step-title">Generate session key</p>
-                  <p className="step-note">Click Enable encryption to create a local session key and store pubkey onchain.</p>
-                </div>
-                <span className="step-badge">{encryptionReady ? "done" : account ? "now" : "pending"}</span>
-              </article>
+                  <article className={`step ${encryptionReady ? "done" : account ? "active" : "pending"}`}>
+                    <span className="step-index">2</span>
+                    <div className="step-content">
+                      <p className="step-title">Generate session key</p>
+                      <p className="step-note">Click Enable encryption to create a local session key and store pubkey onchain.</p>
+                    </div>
+                    <span className="step-badge">{encryptionReady ? "done" : account ? "now" : "pending"}</span>
+                  </article>
 
-              <article className={`step ${hasSdkToken ? "done" : hasRequest ? "active" : "pending"}`}>
-                <span className="step-index">3</span>
-                <div className="step-content">
-                  <p className="step-title">Start KYC and fetch SDK token</p>
-                  <p className="step-note">Request session, wait CRE token packet, decrypt token locally in browser.</p>
-                </div>
-                <span className="step-badge">
-                  {hasSdkToken ? "done" : waitingPacket ? "waiting CRE" : waitingDecrypt ? "retry" : hasRequest ? "pending" : "pending"}
-                </span>
-              </article>
+                  <article className={`step ${hasSdkToken ? "done" : hasRequest ? "active" : "pending"}`}>
+                    <span className="step-index">3</span>
+                    <div className="step-content">
+                      <p className="step-title">Start KYC and fetch SDK token</p>
+                      <p className="step-note">Request session, wait CRE token packet, decrypt token locally in browser.</p>
+                    </div>
+                    <span className="step-badge">
+                      {hasSdkToken ? "done" : waitingPacket ? "waiting CRE" : waitingDecrypt ? "retry" : hasRequest ? "pending" : "pending"}
+                    </span>
+                  </article>
 
-              <article className={`step ${verify.ok ? "done" : hasSdkToken ? "active" : "pending"}`}>
-                <span className="step-index">4</span>
-                <div className="step-content">
-                  <p className="step-title">Complete Sumsub and wait sync</p>
-                  <p className="step-note">After GREEN, verifyUser becomes true and gated actions unlock.</p>
+                  <article className={`step ${verify.ok ? "done" : hasSdkToken ? "active" : "pending"}`}>
+                    <span className="step-index">4</span>
+                    <div className="step-content">
+                      <p className="step-title">Complete Sumsub and wait sync</p>
+                      <p className="step-note">After GREEN, verifyUser becomes true and gated actions unlock.</p>
+                    </div>
+                    <span className="step-badge">{verify.ok ? "done" : hasSdkToken ? "waiting review" : "pending"}</span>
+                  </article>
                 </div>
-                <span className="step-badge">{verify.ok ? "done" : hasSdkToken ? "waiting review" : "pending"}</span>
-              </article>
-            </div>
-          </div>
+              </div>
 
-          <div className="button-grid">
-            <button className="btn strong" onClick={connectWallet} disabled={busy}>
-              Connect wallet
-            </button>
-            <button className="btn" onClick={() => refreshOnchainData()} disabled={busy || !account || networkMismatch}>
-              Refresh status
-            </button>
-            <button
-              className="btn"
-              onClick={enableEncryption}
-              disabled={busy || !account || networkMismatch || waitingPacket}
-            >
-              Enable encryption
-            </button>
-            <button
-              className="btn strong"
-              onClick={startVerification}
-              disabled={busy || !account || !encryptionReady || networkMismatch || waitingPacket}
-            >
-              Start verification
-            </button>
-          </div>
+              <div className="button-grid">
+                <button className="btn strong" onClick={connectWallet} disabled={busy}>
+                  Connect wallet
+                </button>
+                <button
+                  className="btn"
+                  onClick={refreshStatusWithRetry}
+                  disabled={busy || !account || networkMismatch || waitingPacket}
+                >
+                  {refreshingStatus ? "Refreshing..." : "Refresh status"}
+                </button>
+                <button
+                  className="btn"
+                  onClick={enableEncryption}
+                  disabled={busy || !account || networkMismatch || waitingPacket}
+                >
+                  Enable encryption
+                </button>
+                <button
+                  className="btn strong"
+                  onClick={startVerification}
+                  disabled={busy || !account || !encryptionReady || networkMismatch || waitingPacket}
+                >
+                  Start verification
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="flow-block quick-flow">
+                <h3>Quick KYC Flow</h3>
+                <div className="steps">
+                  <article className={`step ${account && !networkMismatch ? "done" : account ? "warn" : "active"}`}>
+                    <span className="step-index">1</span>
+                    <div className="step-content">
+                      <p className="step-title">Connect wallet</p>
+                      <p className="step-note">Use chain {expectedChainId || "31337"} to continue.</p>
+                    </div>
+                    <span className="step-badge">{account ? (networkMismatch ? "wrong network" : "done") : "now"}</span>
+                  </article>
+                  <article className={`step ${hasRequest || waitingPacket ? "active" : account ? "pending" : "pending"}`}>
+                    <span className="step-index">2</span>
+                    <div className="step-content">
+                      <p className="step-title">Go to KYC</p>
+                      <p className="step-note">One click runs: enable encryption -&gt; start verification.</p>
+                    </div>
+                    <span className="step-badge">{waitingPacket ? "waiting CRE" : hasRequest ? "requested" : "pending"}</span>
+                  </article>
+                  <article className={`step ${hasSdkToken || sumsubModalOpen ? "active" : "pending"}`}>
+                    <span className="step-index">3</span>
+                    <div className="step-content">
+                      <p className="step-title">Complete Sumsub in modal</p>
+                      <p className="step-note">WebSDK opens automatically in modal window.</p>
+                    </div>
+                    <span className="step-badge">{sumsubModalOpen ? "open" : hasSdkToken ? "started" : "pending"}</span>
+                  </article>
+                  <article className={`step ${verify.ok ? "done" : syncWaiting || hasSdkToken ? "active" : "pending"}`}>
+                    <span className="step-index">4</span>
+                    <div className="step-content">
+                      <p className="step-title">Wait onchain sync</p>
+                      <p className="step-note">UI auto-checks status. Manual check is still available.</p>
+                    </div>
+                    <span className="step-badge">{verify.ok ? "done" : syncWaiting ? "syncing..." : "pending"}</span>
+                  </article>
+                </div>
+              </div>
+
+              <div className="button-grid quick-grid">
+                <button className="btn strong" onClick={connectWallet} disabled={busy}>
+                  Connect wallet
+                </button>
+                <button
+                  className={`btn strong quick-cta ${account && !busy && !networkMismatch ? "pulse" : ""}`}
+                  onClick={goToKyc}
+                  disabled={busy || !account || networkMismatch || waitingPacket}
+                >
+                  Go to KYC
+                </button>
+              </div>
+              <button className="link-btn" onClick={refreshStatusWithRetry} disabled={busy || !account || networkMismatch}>
+                {refreshingStatus ? "Checking status..." : "Check status now"}
+              </button>
+            </>
+          )}
 
           <div className="level-lock">
             <span className="level-label">KYC Level (ENV)</span>
@@ -601,9 +823,12 @@ export default function App() {
             </div>
           </div>
 
-          <div className="status-box">Status: {status}</div>
+          <div className={`status-box ${refreshingStatus || syncWaiting || waitingPacket ? "live" : ""}`}>
+            <span className={`status-dot ${refreshingStatus || syncWaiting || waitingPacket ? "spin" : ""}`} />
+            Status: {status}
+          </div>
           {error ? <div className="error">Error: {error}</div> : null}
-          <div id="sumsub-websdk-container" className="sumsub" />
+          {sumsubModalOpen ? <p className="muted">Sumsub WebSDK is open in modal.</p> : null}
         </section>
 
         <div className="stack">
@@ -690,6 +915,20 @@ export default function App() {
           </section>
         </div>
       </div>
+
+      {sumsubModalOpen ? (
+        <div className="modal-backdrop" onClick={() => setSumsubModalOpen(false)}>
+          <div className="modal-card reveal" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-head">
+              <h3>Sumsub Verification</h3>
+              <button className="btn" onClick={() => setSumsubModalOpen(false)}>
+                Close
+              </button>
+            </div>
+            <div id="sumsub-modal-container" className="sumsub modal-sumsub" />
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

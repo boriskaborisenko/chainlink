@@ -101,6 +101,30 @@ body {
   }
 }
 
+@keyframes pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(159, 101, 255, 0.55);
+  }
+
+  70% {
+    box-shadow: 0 0 0 14px rgba(159, 101, 255, 0);
+  }
+
+  100% {
+    box-shadow: 0 0 0 0 rgba(159, 101, 255, 0);
+  }
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .hero {
   padding: 1.2rem 1.3rem;
   background:
@@ -145,6 +169,34 @@ body {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
+}
+
+.view-switch {
+  margin-top: 0.9rem;
+  display: inline-flex;
+  border: 1px solid #4e437f;
+  border-radius: 999px;
+  background: rgba(30, 26, 52, 0.85);
+  padding: 0.2rem;
+  gap: 0.22rem;
+}
+
+.switch-btn {
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 0.3rem 0.7rem;
+  font-size: 0.74rem;
+  font-family: "Sora", sans-serif;
+  font-weight: 700;
+  color: #d4c8ff;
+  background: transparent;
+  cursor: pointer;
+}
+
+.switch-btn.active {
+  color: #f5efff;
+  background: linear-gradient(135deg, #9f65ff, #7a43ea);
+  border-color: #a772ff;
 }
 
 .chip {
@@ -301,6 +353,10 @@ h3 {
   grid-template-columns: 1fr;
 }
 
+.button-grid.quick-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .btn {
   border: 1px solid #56498d;
   border-radius: 10px;
@@ -317,6 +373,10 @@ h3 {
 .btn.strong {
   border-color: #8c57ff;
   background: linear-gradient(135deg, #9f65ff, #7a43ea);
+}
+
+.btn.pulse:not(:disabled) {
+  animation: pulse 1.9s infinite;
 }
 
 .btn:hover:not(:disabled) {
@@ -359,6 +419,25 @@ h3 {
   background: rgba(143, 97, 255, 0.25);
 }
 
+.link-btn {
+  margin-top: 0.6rem;
+  border: 0;
+  background: transparent;
+  color: #c6b7ff;
+  font-size: 0.74rem;
+  font-weight: 700;
+  font-family: "Sora", sans-serif;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: rgba(198, 183, 255, 0.55);
+  text-underline-offset: 3px;
+}
+
+.link-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .kv-grid {
   margin-top: 0.86rem;
   display: grid;
@@ -399,6 +478,27 @@ h3 {
   font-family: "JetBrains Mono", monospace;
   font-size: 0.8rem;
   background: rgba(34, 30, 56, 0.92);
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.status-box.live {
+  border-color: #a06dff;
+}
+
+.status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  border: 2px solid #8f60f0;
+  background: #352a5f;
+  flex: 0 0 auto;
+}
+
+.status-dot.spin {
+  border-top-color: #d3c0ff;
+  animation: spin 0.9s linear infinite;
 }
 
 .error {
@@ -422,6 +522,42 @@ h3 {
   overflow: hidden;
 }
 
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 8, 22, 0.78);
+  backdrop-filter: blur(4px);
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  z-index: 60;
+}
+
+.modal-card {
+  width: min(980px, 96vw);
+  border: 1px solid #5b4a93;
+  border-radius: 16px;
+  background: rgba(18, 16, 32, 0.98);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+  padding: 0.8rem;
+}
+
+.modal-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.modal-head h3 {
+  margin: 0;
+}
+
+.modal-sumsub {
+  margin-top: 0.6rem;
+  min-height: min(74vh, 760px);
+}
+
 .muted {
   margin: 0.4rem 0 0;
   font-size: 0.84rem;
@@ -439,6 +575,10 @@ h3 {
 
   .kv-grid.compact {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .button-grid.quick-grid {
+    grid-template-columns: 1fr;
   }
 }
 
