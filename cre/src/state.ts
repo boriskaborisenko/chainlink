@@ -6,7 +6,8 @@ import { WorkflowState } from "./types.js";
 const DEFAULT_STATE: WorkflowState = {
   lastIssueTokenBlock: 0,
   lastSyncBlock: 0,
-  users: {}
+  users: {},
+  sumsubUserIds: {}
 };
 
 function statePath() {
@@ -27,7 +28,8 @@ export function readState(): WorkflowState {
     return {
       lastIssueTokenBlock: parsed.lastIssueTokenBlock ?? 0,
       lastSyncBlock: parsed.lastSyncBlock ?? 0,
-      users: parsed.users ?? {}
+      users: parsed.users ?? {},
+      sumsubUserIds: parsed.sumsubUserIds ?? {}
     };
   } catch {
     return DEFAULT_STATE;

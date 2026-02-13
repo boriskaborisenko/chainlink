@@ -69,6 +69,7 @@ If you are upgrading from an older revision, redeploy is required because `KycSe
 
 - `SUMSUB_APP_TOKEN`
 - `SUMSUB_SECRET_KEY`
+- `SUMSUB_USER_ID_MODE` (`wallet_request` recommended for sandbox demos to avoid instant "already approved")
 - optional endpoint overrides if your Sumsub project uses different paths.
 
 7. Start CRE worker:

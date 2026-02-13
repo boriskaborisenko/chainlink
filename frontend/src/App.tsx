@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Contract, BrowserProvider, Interface, ethers } from "ethers";
 import { useAppKit, useAppKitAccount, useAppKitProvider } from "@reown/appkit/react";
 import { passRegistryAbi } from "./abi/passRegistry";
@@ -36,6 +36,51 @@ type OnchainSnapshot = {
 };
 
 type WalletProviderLike = any;
+type SimpleActionKind = "connect" | "kyc" | "status";
+
+type ProgressCopy = {
+  title: string;
+  message: string;
+};
+
+type SimpleResultModal = {
+  title: string;
+  message: string;
+  isError: boolean;
+};
+
+function getSimpleProgressCopy(
+  status: string,
+  waitingPacket: boolean,
+  refreshingStatus: boolean,
+  syncWaiting: boolean
+): ProgressCopy {
+  if (waitingPacket) {
+    return {
+      title: "Preparing verification",
+      message: "We are securely requesting your KYC session. This usually takes a few seconds."
+    };
+  }
+
+  if (refreshingStatus || syncWaiting) {
+    return {
+      title: "Updating your status",
+      message: "Checking your latest verification result onchain. Please keep this page open."
+    };
+  }
+
+  if (status.toLowerCase().includes("wallet")) {
+    return {
+      title: "Action required",
+      message: "Please confirm the request in your wallet to continue."
+    };
+  }
+
+  return {
+    title: "Please wait",
+    message: "Processing your request..."
+  };
+}
 
 function reasonLabel(reason: number): string {
   switch (reason) {
@@ -81,8 +126,38 @@ async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+const SESSION_SECRET_STORAGE_PREFIX = "passstore:session-secret:";
+
+function sessionSecretStorageKey(address: string): string {
+  return `${SESSION_SECRET_STORAGE_PREFIX}${address.toLowerCase()}`;
+}
+
+function readSessionSecret(address: string): string {
+  if (typeof window === "undefined" || !address) {
+    return "";
+  }
+
+  try {
+    return window.sessionStorage.getItem(sessionSecretStorageKey(address)) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function writeSessionSecret(address: string, secretKeyHex: string): void {
+  if (typeof window === "undefined" || !address || !secretKeyHex) {
+    return;
+  }
+
+  try {
+    window.sessionStorage.setItem(sessionSecretStorageKey(address), secretKeyHex);
+  } catch {
+    // Keep flow working even if browser storage is unavailable.
+  }
+}
+
 export default function App() {
-  const [view, setView] = useState<"classic" | "quick">("classic");
+  const [view, setView] = useState<"classic" | "quick" | "simple">("classic");
   const [account, setAccount] = useState<string>("");
   const [chainId, setChainId] = useState<number>(0);
   const [busy, setBusy] = useState<boolean>(false);
@@ -102,9 +177,13 @@ export default function App() {
   const [sessionSecretKeyHex, setSessionSecretKeyHex] = useState<string>("");
   const [waitingPacket, setWaitingPacket] = useState<boolean>(false);
   const [sumsubModalOpen, setSumsubModalOpen] = useState<boolean>(false);
+  const [simpleActionKind, setSimpleActionKind] = useState<SimpleActionKind | null>(null);
+  const [simpleResultModal, setSimpleResultModal] = useState<SimpleResultModal | null>(null);
   const { open } = useAppKit();
   const { address: appKitAddress, isConnected: isAppKitConnected } = useAppKitAccount({ namespace: "eip155" });
   const { walletProvider } = useAppKitProvider<WalletProviderLike>("eip155");
+  const simpleWasBusyRef = useRef<boolean>(false);
+  const sessionSecretKeyRef = useRef<string>("");
 
   const provider = useMemo(() => {
     if (!walletProvider) {
@@ -115,11 +194,29 @@ export default function App() {
   }, [walletProvider]);
 
   useEffect(() => {
+    sessionSecretKeyRef.current = sessionSecretKeyHex;
+  }, [sessionSecretKeyHex]);
+
+  useEffect(() => {
+    const lightClass = "page-theme-light";
+    if (view === "simple") {
+      document.body.classList.add(lightClass);
+    } else {
+      document.body.classList.remove(lightClass);
+    }
+
+    return () => {
+      document.body.classList.remove(lightClass);
+    };
+  }, [view]);
+
+  useEffect(() => {
     if (!appKitAddress || !isAppKitConnected) {
       if (account) {
         setAccount("");
         setChainId(0);
         setSessionSecretKeyHex("");
+        sessionSecretKeyRef.current = "";
         setPendingDecrypt(null);
         setEncryptionReady(false);
         setSumsubModalOpen(false);
@@ -130,8 +227,10 @@ export default function App() {
     }
 
     if (!account || account.toLowerCase() !== appKitAddress.toLowerCase()) {
+      const restoredSessionSecret = readSessionSecret(appKitAddress);
       setAccount(appKitAddress);
-      setSessionSecretKeyHex("");
+      setSessionSecretKeyHex(restoredSessionSecret);
+      sessionSecretKeyRef.current = restoredSessionSecret;
       setPendingDecrypt(null);
       setEncryptionReady(false);
       setSumsubModalOpen(false);
@@ -142,6 +241,85 @@ export default function App() {
     }
   }, [account, appKitAddress, isAppKitConnected, provider]);
 
+  useEffect(() => {
+    if (view !== "simple") {
+      simpleWasBusyRef.current = false;
+      return;
+    }
+
+    const inProgress = waitingPacket || refreshingStatus || syncWaiting || (busy && simpleActionKind !== null);
+    if (inProgress) {
+      simpleWasBusyRef.current = true;
+      return;
+    }
+
+    if (!simpleWasBusyRef.current || !simpleActionKind) {
+      return;
+    }
+
+    simpleWasBusyRef.current = false;
+
+    if (error) {
+      setSimpleResultModal({
+        title: "Action not completed",
+        message: error,
+        isError: true
+      });
+      setSimpleActionKind(null);
+      return;
+    }
+
+    if (simpleActionKind === "kyc") {
+      setSimpleResultModal({
+        title: "Verification started",
+        message: sumsubModalOpen
+          ? "The verification form is open. Complete it and then check your status."
+          : status || "KYC request submitted successfully.",
+        isError: false
+      });
+      setSimpleActionKind(null);
+      return;
+    }
+
+    setSimpleResultModal({
+      title: verify.ok ? "Status updated" : "Status checked",
+      message: verify.ok ? "You're verified and all gated actions are now unlocked." : status || "Status check completed.",
+      isError: false
+    });
+    setSimpleActionKind(null);
+  }, [
+    view,
+    busy,
+    waitingPacket,
+    refreshingStatus,
+    syncWaiting,
+    simpleActionKind,
+    error,
+    status,
+    verify.ok,
+    sumsubModalOpen,
+    isAppKitConnected,
+    account
+  ]);
+
+  async function connectWalletFromSimple() {
+    setSimpleResultModal(null);
+    setSimpleActionKind(null);
+    await connectWallet();
+  }
+
+  async function goToKycFromSimple() {
+    setSimpleResultModal(null);
+    setSimpleActionKind("kyc");
+    await goToKyc();
+  }
+
+  async function refreshStatusFromSimple() {
+    setSimpleResultModal(null);
+    setSimpleActionKind("status");
+    await refreshStatusWithRetry();
+  }
+
   async function getActiveSignerAndAddress(): Promise<{ signer: ethers.Signer; address: string }> {
     if (!provider) {
       throw new Error("Provider unavailable");
@@ -151,8 +329,10 @@ export default function App() {
     const address = await signer.getAddress();
 
     if (!account || account.toLowerCase() !== address.toLowerCase()) {
+      const restoredSessionSecret = readSessionSecret(address);
       setAccount(address);
-      setSessionSecretKeyHex("");
+      setSessionSecretKeyHex(restoredSessionSecret);
+      sessionSecretKeyRef.current = restoredSessionSecret;
       setPendingDecrypt(null);
       setEncryptionReady(false);
       setSumsubModalOpen(false);
@@ -238,8 +418,14 @@ export default function App() {
       exists: Boolean(attResult[7])
     });
     const hasOnchainEncryptionKey = pubKeyHex !== "0x";
-    setEncryptionReady(hasOnchainEncryptionKey && Boolean(sessionSecretKeyHex));
-    if (hasOnchainEncryptionKey && !sessionSecretKeyHex) {
+    const localSessionSecret =
+      account && account.toLowerCase() === user ? sessionSecretKeyRef.current || readSessionSecret(user) : readSessionSecret(user);
+    if (localSessionSecret && account && account.toLowerCase() === user && !sessionSecretKeyRef.current) {
+      setSessionSecretKeyHex(localSessionSecret);
+      sessionSecretKeyRef.current = localSessionSecret;
+    }
+    setEncryptionReady(hasOnchainEncryptionKey && Boolean(localSessionSecret));
+    if (hasOnchainEncryptionKey && !localSessionSecret) {
       setStatus("Onchain encryption key exists, but local session key is missing. Click Enable encryption again.");
     }
     setHasMinted(Boolean(mintedResult));
@@ -257,15 +443,18 @@ export default function App() {
     };
   }
 
-  async function ensureSessionEncryption(signer: ethers.Signer, address: string): Promise<void> {
+  async function ensureSessionEncryption(signer: ethers.Signer, address: string): Promise<string> {
     const keyPair = generateSessionKeyPairHex();
     const { broker } = makeContracts(signer);
     const tx = await broker.setEncryptionPubKey(keyPair.publicKeyHex);
     await tx.wait();
 
+    sessionSecretKeyRef.current = keyPair.secretKeyHex;
     setSessionSecretKeyHex(keyPair.secretKeyHex);
+    writeSessionSecret(address, keyPair.secretKeyHex);
     setEncryptionReady(true);
     setStatus(`Session encryption key stored onchain for ${shortAddress(address)}`);
+    return keyPair.secretKeyHex;
   }
 
   async function enableEncryption() {
@@ -349,13 +538,17 @@ export default function App() {
     }, 25);
   }
 
-  async function autoDecryptAndLaunch(packet: PendingDecryptPacket): Promise<void> {
+  async function autoDecryptAndLaunch(packet: PendingDecryptPacket, secretKeyHexOverride?: string): Promise<void> {
     const now = Math.floor(Date.now() / 1000);
     if (packet.expiresAt > 0 && packet.expiresAt < now) {
       throw new Error("SDK token packet expired. Start verification again.");
     }
 
-    if (!sessionSecretKeyHex) {
+    let activeSecretKeyHex = secretKeyHexOverride || sessionSecretKeyRef.current;
+    if (!activeSecretKeyHex && packet.owner) {
+      activeSecretKeyHex = readSessionSecret(packet.owner);
+    }
+    if (!activeSecretKeyHex) {
       throw new Error("Missing local session secret key. Click Enable encryption and start verification again.");
     }
 
@@ -363,7 +556,12 @@ export default function App() {
       throw new Error(`Wrong wallet for auto-decrypt. Switch to ${shortAddress(packet.owner)}.`);
     }
 
-    const decryptedToken = decryptSessionCiphertextHex(packet.ciphertextHex, sessionSecretKeyHex);
+    if (activeSecretKeyHex !== sessionSecretKeyRef.current) {
+      sessionSecretKeyRef.current = activeSecretKeyHex;
+      setSessionSecretKeyHex(activeSecretKeyHex);
+    }
+
+    const decryptedToken = decryptSessionCiphertextHex(packet.ciphertextHex, activeSecretKeyHex);
     const preview = `${decryptedToken.slice(0, 8)}...${decryptedToken.slice(-6)}`;
 
     setSdkTokenPreview(preview);
@@ -375,7 +573,7 @@ export default function App() {
     await refreshOnchainData(packet.owner);
   }
 
-  async function submitKycRequest(signer: ethers.Signer, address: string): Promise<void> {
+  async function submitKycRequest(signer: ethers.Signer, address: string, sessionSecretHex: string): Promise<void> {
     const { broker } = makeContracts(signer);
     setSyncWaiting(false);
 
@@ -423,7 +621,7 @@ export default function App() {
 
         setPendingDecrypt(pendingPacket);
         setStatus("Encrypted SDK token received. Decrypting locally...");
-        await autoDecryptAndLaunch(pendingPacket);
+        await autoDecryptAndLaunch(pendingPacket, sessionSecretHex);
       } catch (pollErr) {
         setError((pollErr as Error).message);
         setStatus("Could not auto-decrypt token. Press Start verification again.");
@@ -439,7 +637,16 @@ export default function App() {
       return;
     }
 
-    if (!sessionSecretKeyHex) {
+    let activeSessionSecret = sessionSecretKeyRef.current;
+    if (!activeSessionSecret) {
+      activeSessionSecret = readSessionSecret(account);
+      if (activeSessionSecret) {
+        sessionSecretKeyRef.current = activeSessionSecret;
+        setSessionSecretKeyHex(activeSessionSecret);
+      }
+    }
+
+    if (!activeSessionSecret) {
       setError("Click Enable encryption first to generate a local session key");
       return;
     }
@@ -454,7 +661,7 @@ export default function App() {
       }
 
       const { signer, address } = await getActiveSignerAndAddress();
-      await submitKycRequest(signer, address);
+      await submitKycRequest(signer, address, activeSessionSecret);
     } catch (err) {
       setError((err as Error).message);
       setWaitingPacket(false);
@@ -479,14 +686,26 @@ export default function App() {
       }
 
       const { signer, address } = await getActiveSignerAndAddress();
+      let activeSessionSecret = sessionSecretKeyRef.current;
+      if (!activeSessionSecret) {
+        activeSessionSecret = readSessionSecret(address);
+        if (activeSessionSecret) {
+          sessionSecretKeyRef.current = activeSessionSecret;
+          setSessionSecretKeyHex(activeSessionSecret);
+        }
+      }
 
-      if (!encryptionReady || !sessionSecretKeyHex) {
+      if (!encryptionReady || !activeSessionSecret) {
         setStatus("Preparing session key...");
-        await ensureSessionEncryption(signer, address);
+        activeSessionSecret = await ensureSessionEncryption(signer, address);
+      }
+
+      if (!activeSessionSecret) {
+        throw new Error("Could not prepare local session key");
       }
 
       setStatus("Session key ready. Submitting KYC request...");
-      await submitKycRequest(signer, address);
+      await submitKycRequest(signer, address, activeSessionSecret);
     } catch (err) {
       setError((err as Error).message);
       setWaitingPacket(false);
@@ -654,43 +873,184 @@ export default function App() {
   const hasRequest = requestId !== "-";
   const hasSdkToken = sdkTokenPreview !== "-";
   const waitingDecrypt = Boolean(pendingDecrypt);
-  const connectButtonLabel = isAppKitConnected ? "Now Connected!" : "Connect wallet";
+  const connectButtonLabel = isAppKitConnected ? "Connected!" : "Connect wallet";
+  const simpleBusy =
+    view === "simple" && (waitingPacket || refreshingStatus || syncWaiting || (busy && simpleActionKind !== null));
+  const simpleProgress = getSimpleProgressCopy(status, waitingPacket, refreshingStatus, syncWaiting);
+  const simpleVerificationLabel = verify.ok ? "Verified" : hasSdkToken ? "Review in progress" : "Not verified yet";
+  const simpleNetworkLabel = networkMismatch ? `Wrong network (${chainId})` : `Network ${expectedChainId || "-"}`;
+  const attestationExpirationLabel =
+    attestation && attestation.expiration > 0 ? new Date(attestation.expiration * 1000).toISOString().slice(0, 10) : "-";
+  const accessAssetStatus = verify.ok ? (hasMinted ? "Minted" : "Available") : "Locked";
+  const claimAssetStatus = verify.ok ? (hasClaimed ? "Claimed" : "Available") : "Locked";
 
   return (
-    <div className="page">
-      <div className="mesh mesh-a" />
-      <div className="mesh mesh-b" />
+    <div className={`page ${view === "simple" ? "page-simple" : ""}`}>
+      {view === "simple" ? null : <div className="mesh mesh-a" />}
+      {view === "simple" ? null : <div className="mesh mesh-b" />}
 
-      <header className="panel hero reveal">
-        <div className="hero-row">
-          <p className="eyebrow">Trust Registry MVP</p>
-          <span className={`pill ${verify.ok ? "ok" : "warn"}`}>{verify.ok ? "Policy pass" : "Policy blocked"}</span>
-        </div>
-        <h1>
-          PassStore <span>+ Sumsub</span>
-        </h1>
-        <p>
-          No custom backend: encrypted SDK token packets onchain, CRE workers for issuance and status sync,
-          and policy-gated onchain apps. Provider layer is extensible: Sumsub now, other KYC providers next.
-        </p>
-        <div className="chip-row">
-          <span className="chip">React + Vite</span>
-          <span className="chip">Chainlink CRE</span>
-          <span className="chip">Sumsub WebSDK</span>
-          <span className="chip">Provider-agnostic</span>
-          <span className="chip">No PII onchain</span>
-        </div>
-        <div className="view-switch">
-          <button className={`switch-btn ${view === "classic" ? "active" : ""}`} onClick={() => setView("classic")}>
-            Classic Flow
-          </button>
-          <button className={`switch-btn ${view === "quick" ? "active" : ""}`} onClick={() => setView("quick")}>
-            Quick KYC
-          </button>
-        </div>
+      <header className={`panel hero reveal ${view === "simple" ? "hero-simple" : ""}`}>
+        {view === "simple" ? (
+          <>
+            <div className="hero-top-row">
+              <div className="view-switch view-switch-inline">
+                <button className="switch-btn" onClick={() => setView("classic")}>
+                  Classic Flow
+                </button>
+                <button className="switch-btn" onClick={() => setView("quick")}>
+                  Quick KYC
+                </button>
+                <button className="switch-btn active" onClick={() => setView("simple")}>
+                  Simple UX
+                </button>
+              </div>
+              <div className="simple-top-actions">
+                <button
+                  className={`top-action-btn top-connect-btn ${isAppKitConnected ? "is-connected" : ""}`}
+                  onClick={connectWalletFromSimple}
+                  disabled={busy}
+                >
+                  <span className={`wallet-dot ${isAppKitConnected ? "on" : "off"}`} />
+                  <span>{connectButtonLabel}</span>
+                </button>
+                <button
+                  className="top-action-btn"
+                  onClick={refreshStatusFromSimple}
+                  disabled={busy || !account || networkMismatch || waitingPacket}
+                >
+                  {refreshingStatus ? "Checking..." : "Check status"}
+                </button>
+                <span className={`chain-id-text ${networkMismatch ? "warn" : ""}`}>Chain {chainId || expectedChainId || "-"}</span>
+                <span className={`pill ${verify.ok ? "ok" : "warn"}`}>{verify.ok ? "Policy pass" : "Policy blocked"}</span>
+              </div>
+            </div>
+          </>
+        ) : (
+          <div className="hero-row">
+            <p className="eyebrow">Trust Registry MVP</p>
+            <span className={`pill ${verify.ok ? "ok" : "warn"}`}>{verify.ok ? "Policy pass" : "Policy blocked"}</span>
+          </div>
+        )}
+        {view === "simple" ? (
+          <div className="hero-main-row">
+            <div className="hero-main-copy">
+              <h1>
+                PassStore <span>+ Sumsub</span>
+              </h1>
+              <p>No backend. Encrypted SDK token delivery via CRE and policy-gated onchain access.</p>
+            </div>
+            {!verify.ok ? (
+              <div className="hero-main-cta">
+                <button
+                  className="simple-btn primary hero-cta-btn"
+                  onClick={goToKycFromSimple}
+                  disabled={busy || !account || networkMismatch || waitingPacket}
+                >
+                  Go to KYC
+                </button>
+              </div>
+            ) : null}
+          </div>
+        ) : (
+          <>
+            <h1>
+              PassStore <span>+ Sumsub</span>
+            </h1>
+            <p>No backend. Encrypted SDK token delivery via CRE and policy-gated onchain access.</p>
+            <div className="view-switch">
+              <button className={`switch-btn ${view === "classic" ? "active" : ""}`} onClick={() => setView("classic")}>
+                Classic Flow
+              </button>
+              <button className={`switch-btn ${view === "quick" ? "active" : ""}`} onClick={() => setView("quick")}>
+                Quick KYC
+              </button>
+              <button className="switch-btn" onClick={() => setView("simple")}>
+                Simple UX
+              </button>
+            </div>
+          </>
+        )}
       </header>
 
-      <div className="layout">
+      {view === "simple" ? (
+        <>
+          <div className="simple-layout reveal">
+            <section className="simple-panel">
+              <h2 className="simple-section-title">Identity Access</h2>
+              <div className="simple-card">
+                <p>{verify.ok ? "You are verified. Protected actions are now available." : "Complete verification to unlock access."}</p>
+                <div className="simple-identity-box">
+                  <div className="simple-attestation">
+                    <div className="simple-att-item">
+                      <span>Exists</span>
+                      <strong>{String(attestation?.exists ?? false)}</strong>
+                    </div>
+                    <div className="simple-att-item">
+                      <span>Revoked</span>
+                      <strong>{String(attestation?.revoked ?? false)}</strong>
+                    </div>
+                    <div className="simple-att-item">
+                      <span>Flags</span>
+                      <strong>{attestation?.flags ?? "0"}</strong>
+                    </div>
+                    <div className="simple-att-item">
+                      <span>Expires</span>
+                      <strong>{attestationExpirationLabel}</strong>
+                    </div>
+                    <div className="simple-att-item">
+                      <span>Risk</span>
+                      <strong>{attestation?.riskScore ?? 0}</strong>
+                    </div>
+                    <div className="simple-att-item">
+                      <span>Subject</span>
+                      <strong>{attestation?.subjectType ?? 0}</strong>
+                    </div>
+                  </div>
+                  <div className="simple-tags">
+                    <span className="simple-tag">{account ? shortAddress(account) : "Wallet not connected"}</span>
+                    <span className={`simple-tag ${verify.ok ? "ok" : "warn"}`}>{simpleVerificationLabel}</span>
+                    <span className={`simple-tag ${networkMismatch ? "warn" : ""}`}>{simpleNetworkLabel}</span>
+                  </div>
+                </div>
+              </div>
+
+              {error ? <div className="simple-error">Error: {error}</div> : null}
+              {sumsubModalOpen ? <p className="simple-note">Verification form is open. Complete it and then press Check status.</p> : null}
+            </section>
+            <section className="simple-panel simple-assets-panel">
+              <h2>Available assets</h2>
+              <p>Demo has 2 gated assets.</p>
+              <div className="simple-asset-row">
+                <div className="simple-asset-meta">
+                  <span>AccessPass</span>
+                  <strong>{accessAssetStatus}</strong>
+                </div>
+                <button
+                  className="simple-asset-btn"
+                  onClick={mintAccessPass}
+                  disabled={busy || !account || networkMismatch || !verify.ok || hasMinted}
+                >
+                  {hasMinted ? "Received" : "Get"}
+                </button>
+              </div>
+              <div className="simple-asset-row">
+                <div className="simple-asset-meta">
+                  <span>ClaimDrop</span>
+                  <strong>{claimAssetStatus}</strong>
+                </div>
+                <button
+                  className="simple-asset-btn"
+                  onClick={claimDrop}
+                  disabled={busy || !account || networkMismatch || !verify.ok || hasClaimed}
+                >
+                  {hasClaimed ? "Claimed" : "Claim"}
+                </button>
+              </div>
+            </section>
+          </div>
+        </>
+      ) : (
+        <div className="layout">
         <section className="panel reveal">
           <div className="section-head">
             <h2>User Flow</h2>
@@ -955,6 +1315,30 @@ export default function App() {
           </section>
         </div>
       </div>
+      )}
+
+      {simpleBusy ? (
+        <div className="simple-loading-backdrop">
+          <div className="simple-loading-card">
+            <div className="simple-spinner" />
+            <h3>{simpleProgress.title}</h3>
+            <p>{simpleProgress.message}</p>
+            <span>{status}</span>
+          </div>
+        </div>
+      ) : null}
+
+      {view === "simple" && simpleResultModal ? (
+        <div className="simple-result-backdrop">
+          <div className={`simple-result-card ${simpleResultModal.isError ? "is-error" : ""}`}>
+            <h3>{simpleResultModal.title}</h3>
+            <p>{simpleResultModal.message}</p>
+            <button className="simple-btn primary" onClick={() => setSimpleResultModal(null)}>
+              OK
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       {sumsubModalOpen ? (
         <div className="modal-backdrop" onClick={() => setSumsubModalOpen(false)}>

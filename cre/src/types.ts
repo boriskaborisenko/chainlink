@@ -36,8 +36,11 @@ export interface UserSyncState {
   lastSyncAt?: string;
 }
 
+export type SumsubUserIdMap = Record<string, string>;
+
 export interface WorkflowState {
   lastIssueTokenBlock: number;
   lastSyncBlock: number;
   users: Record<string, UserSyncState>;
+  sumsubUserIds: SumsubUserIdMap;
 }

@@ -4,10 +4,50 @@ import { encryptForSessionKey } from "../clients/crypto.js";
 import { generateSdkToken, getReviewStatusByUserId } from "../clients/sumsub.js";
 import { config } from "../config.js";
 import { readState, writeState } from "../state.js";
-import { KycRequestEventData, KycSyncRequestEventData, ReviewDecision } from "../types.js";
+import { KycRequestEventData, KycSyncRequestEventData, ReviewDecision, WorkflowState } from "../types.js";
 import { shouldLoop, sleep } from "./shared.js";
 
 const LOG_LOOKBACK_BLOCKS = 2000;
+
+function requestStateKey(user: string, requestId: bigint): string {
+  return `${user.toLowerCase()}:${requestId.toString()}`;
+}
+
+function fallbackSumsubUserId(user: string, requestId: bigint): string {
+  const normalizedUser = user.toLowerCase();
+
+  if (config.sumsubUserIdMode === "wallet_request") {
+    return `${normalizedUser}_${requestId.toString()}`;
+  }
+
+  return normalizedUser;
+}
+
+function resolveSumsubUserIdForIssue(state: WorkflowState, user: string, requestId: bigint): string {
+  if (config.sumsubUserIdMode === "wallet") {
+    const value = user.toLowerCase();
+    state.sumsubUserIds[requestStateKey(user, requestId)] = value;
+    return value;
+  }
+
+  const uniqueSuffix = Date.now().toString(36);
+  const value = `${user.toLowerCase()}_${requestId.toString()}_${uniqueSuffix}`;
+  state.sumsubUserIds[requestStateKey(user, requestId)] = value;
+  return value;
+}
+
+function resolveSumsubUserIdForSync(state: WorkflowState, user: string, requestId: bigint): string {
+  const mapped = state.sumsubUserIds[requestStateKey(user, requestId)];
+  if (mapped) {
+    return mapped;
+  }
+
+  const fallback = fallbackSumsubUserId(user, requestId);
+  console.warn(
+    `missing sumsubUserId mapping for user=${user} requestId=${requestId.toString()}, falling back to ${fallback}`
+  );
+  return fallback;
+}
 
 async function readKycRequests(fromBlock: number, toBlock: number): Promise<KycRequestEventData[]> {
   if (fromBlock > toBlock) {
@@ -62,7 +102,7 @@ function resolveFromBlock(lastProcessedBlock: number, latestBlock: number, scope
   return lastProcessedBlock + 1;
 }
 
-async function processIssueEvent(event: KycRequestEventData): Promise<void> {
+async function processIssueEvent(event: KycRequestEventData, state: WorkflowState): Promise<void> {
   const broker = getBroker();
 
   const packet = await broker.getPacket(event.requestId);
@@ -94,7 +134,11 @@ async function processIssueEvent(event: KycRequestEventData): Promise<void> {
     );
   }
 
-  const tokenResponse = await generateSdkToken(event.user, configuredLevel, config.tokenTtlSeconds);
+  const sumsubUserId = resolveSumsubUserIdForIssue(state, event.user, event.requestId);
+  console.log(
+    `issuing sdk token requestId=${event.requestId.toString()} user=${event.user} sumsubUserId=${sumsubUserId} mode=${config.sumsubUserIdMode}`
+  );
+  const tokenResponse = await generateSdkToken(sumsubUserId, configuredLevel, config.tokenTtlSeconds);
 
   const ciphertext = encryptForSessionKey(userPubKey, tokenResponse.token);
   const expiresAt = BigInt(Math.floor(Date.now() / 1000) + config.tokenTtlSeconds);
@@ -102,7 +146,9 @@ async function processIssueEvent(event: KycRequestEventData): Promise<void> {
   const tx = await broker.storeEncryptedToken(event.requestId, ethers.hexlify(ciphertext), expiresAt);
   await tx.wait();
 
-  console.log(`stored encrypted token for requestId=${event.requestId.toString()} user=${event.user}`);
+  console.log(
+    `stored encrypted token for requestId=${event.requestId.toString()} user=${event.user} sumsubUserId=${sumsubUserId}`
+  );
 }
 
 async function runIssueSdkTokenPass(latestBlock: number): Promise<void> {
@@ -119,7 +165,7 @@ async function runIssueSdkTokenPass(latestBlock: number): Promise<void> {
 
   for (const event of events) {
     try {
-      await processIssueEvent(event);
+      await processIssueEvent(event, state);
     } catch (err) {
       console.error(`IssueSdkToken event failed requestId=${event.requestId.toString()} user=${event.user}`, err);
     }
@@ -213,9 +259,10 @@ async function runSyncKycStatusPass(latestBlock: number): Promise<void> {
 
   for (const [key, event] of latestSyncRequestByUser.entries()) {
     const user = event.user;
+    const sumsubUserId = resolveSumsubUserIdForSync(state, user, event.requestId);
 
     try {
-      const status = await getReviewStatusByUserId(user);
+      const status = await getReviewStatusByUserId(sumsubUserId);
       const previous = state.users[key]?.lastReviewDecision;
 
       if (status.decision !== previous) {
