@@ -1,4 +1,4 @@
-# CRE_GO (Backup Implementation)
+# DON_FILES/GO (Backup Implementation)
 
 Backup Chainlink-CRE-style workers implemented in Go.
 

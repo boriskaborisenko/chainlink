@@ -1,10 +1,10 @@
 # PassStore + Sumsub + Chainlink CRE (No Backend)
 
-Monorepo with three packages:
+Monorepo with core components:
 
 - `contracts/` - Solidity contracts (registry, broker, demo gated apps).
 - `cre/` - Chainlink CRE unified worker (SDK token issue + KYC sync polling in one loop).
-- `CRE_GO/` - Backup Go implementation of CRE workers (same flow as `cre/`).
+- `DON_FILES/` - Deployment-ready CRE/DON folder split into `TS/` workflows and `GO/` backup worker.
 - `frontend/` - React app for wallet flow, Sumsub WebSDK launch, and gated actions.
 
 The architecture is provider-agnostic: Sumsub is the first integrated KYC provider, but issuer workflows can be extended to other providers without changing the core gating pattern.

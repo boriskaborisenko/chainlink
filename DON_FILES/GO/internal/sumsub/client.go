@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"passstore/cre_go/internal/config"
+	"passstore/don_files_go/internal/config"
 )
 
 type ReviewDecision string
