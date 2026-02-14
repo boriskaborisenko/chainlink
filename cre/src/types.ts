@@ -14,6 +14,15 @@ export interface KycSyncRequestEventData {
   blockNumber: number;
 }
 
+export interface WorldIdVerificationRequestEventData {
+  worldIdRequestId: bigint;
+  user: string;
+  nullifierHash: string;
+  verificationLevel: string;
+  txHash: string;
+  blockNumber: number;
+}
+
 export interface SumsubTokenResponse {
   token: string;
   userId: string;
@@ -41,6 +50,7 @@ export type SumsubUserIdMap = Record<string, string>;
 export interface WorkflowState {
   lastIssueTokenBlock: number;
   lastSyncBlock: number;
+  lastWorldIdBlock: number;
   users: Record<string, UserSyncState>;
   sumsubUserIds: SumsubUserIdMap;
 }

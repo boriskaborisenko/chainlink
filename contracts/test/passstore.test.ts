@@ -91,4 +91,12 @@ describe("PassStore MVP", function () {
 
     await expect(broker.connect(user).requestKycSync()).to.emit(broker, "KycSyncRequested");
   });
+
+  it("emits world id verification request event", async () => {
+    const { user, broker } = await deployFixture();
+
+    await expect(
+      broker.connect(user).requestWorldIdVerification("proof-data", "root-data", "nullifier-data", "device")
+    ).to.emit(broker, "WorldIdVerificationRequested");
+  });
 });

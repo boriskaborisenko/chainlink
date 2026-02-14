@@ -13,6 +13,7 @@ contract KycSessionBroker {
     address public admin;
     uint256 public nextRequestId;
     uint256 public nextSyncRequestId;
+    uint256 public nextWorldIdRequestId;
     uint64 public syncCooldown;
 
     mapping(address => bool) public isIssuer;
@@ -26,6 +27,12 @@ contract KycSessionBroker {
     event EncryptionPubKeySet(address indexed user, bytes pubKey);
     event KycRequested(uint256 indexed requestId, address indexed user, string levelName);
     event KycSyncRequested(uint256 indexed syncRequestId, address indexed user, uint256 indexed requestId);
+    event WorldIdVerificationRequested(
+        uint256 indexed worldIdRequestId,
+        address indexed user,
+        string nullifierHash,
+        string verificationLevel
+    );
     event TokenStored(uint256 indexed requestId, address indexed user, uint64 expiresAt);
     event TokenConsumed(uint256 indexed requestId, address indexed user);
 
@@ -91,6 +98,28 @@ contract KycSessionBroker {
 
         lastSyncRequestAt[msg.sender] = uint64(block.timestamp);
         emit KycSyncRequested(syncRequestId, msg.sender, requestId);
+    }
+
+    function requestWorldIdVerification(
+        string calldata proof,
+        string calldata merkleRoot,
+        string calldata nullifierHash,
+        string calldata verificationLevel
+    ) external returns (uint256 worldIdRequestId) {
+        require(bytes(proof).length > 0, "KycSessionBroker: empty proof");
+        require(bytes(merkleRoot).length > 0, "KycSessionBroker: empty merkle root");
+        require(bytes(nullifierHash).length > 0, "KycSessionBroker: empty nullifier hash");
+        require(bytes(verificationLevel).length > 0, "KycSessionBroker: empty verification level");
+
+        worldIdRequestId = nextWorldIdRequestId;
+        nextWorldIdRequestId = worldIdRequestId + 1;
+
+        emit WorldIdVerificationRequested(
+            worldIdRequestId,
+            msg.sender,
+            nullifierHash,
+            verificationLevel
+        );
     }
 
     function storeEncryptedToken(

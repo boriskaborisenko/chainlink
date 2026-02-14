@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Contract, BrowserProvider, Interface, ethers } from "ethers";
 import { useAppKit, useAppKitAccount, useAppKitProvider } from "@reown/appkit/react";
+import { IDKitWidget, IErrorState, ISuccessResult, VerificationLevel } from "@worldcoin/idkit";
 import { passRegistryAbi } from "./abi/passRegistry";
 import { kycBrokerAbi } from "./abi/kycBroker";
 import { accessPassAbi } from "./abi/accessPass";
@@ -32,6 +33,7 @@ type PendingDecryptPacket = {
 type OnchainSnapshot = {
   verify: VerifySnapshot;
   attestationExists: boolean;
+  worldIdVerified: boolean;
   hasOnchainEncryptionKey: boolean;
 };
 
@@ -47,6 +49,11 @@ type SimpleResultModal = {
   title: string;
   message: string;
   isError: boolean;
+};
+
+type SumsubStatusSnapshot = {
+  reviewStatus: string;
+  reviewAnswer: string;
 };
 
 function getSimpleProgressCopy(
@@ -126,6 +133,62 @@ async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function hashSignalToField(signal: string): string {
+  const normalized = signal.trim();
+  const hashInput = ethers.isHexString(normalized) ? normalized : ethers.toUtf8Bytes(normalized);
+  const fullHash = BigInt(ethers.keccak256(hashInput));
+  const shifted = fullHash >> 8n;
+  return `0x${shifted.toString(16).padStart(64, "0")}`;
+}
+
+function worldIdVerifyEndpoint(appId: string): string {
+  return `https://developer.worldcoin.org/api/v2/verify/${appId}`;
+}
+
+function parseWorldIdVerifyError(rawBody: string, status: number): string {
+  const fallback = `World ID pre-check failed (${status})`;
+  const body = rawBody.trim();
+  if (!body) {
+    return fallback;
+  }
+
+  try {
+    const parsed = JSON.parse(body) as { detail?: string; code?: string };
+    if (parsed.detail?.trim()) {
+      return parsed.detail.trim();
+    }
+    if (parsed.code?.trim()) {
+      return parsed.code.trim();
+    }
+    return fallback;
+  } catch {
+    return `${fallback}: ${body.slice(0, 200)}`;
+  }
+}
+
+function parseWorldIdVerificationLevel(raw: string): VerificationLevel {
+  const normalized = raw.trim().toLowerCase();
+  switch (normalized) {
+    case "orb":
+      return VerificationLevel.Orb;
+    case "document":
+      return VerificationLevel.Document;
+    case "secure_document":
+      return VerificationLevel.SecureDocument;
+    case "device":
+    default:
+      return VerificationLevel.Device;
+  }
+}
+
+function parseWorldIdPrecheckMode(raw: string): "strict" | "soft" | "off" {
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === "soft" || normalized === "off") {
+    return normalized;
+  }
+  return "strict";
+}
+
 const SESSION_SECRET_STORAGE_PREFIX = "passstore:session-secret:";
 
 function sessionSecretStorageKey(address: string): string {
@@ -157,7 +220,6 @@ function writeSessionSecret(address: string, secretKeyHex: string): void {
 }
 
 export default function App() {
-  const [view, setView] = useState<"classic" | "quick" | "simple">("classic");
   const [account, setAccount] = useState<string>("");
   const [chainId, setChainId] = useState<number>(0);
   const [busy, setBusy] = useState<boolean>(false);
@@ -177,6 +239,8 @@ export default function App() {
   const [sessionSecretKeyHex, setSessionSecretKeyHex] = useState<string>("");
   const [waitingPacket, setWaitingPacket] = useState<boolean>(false);
   const [sumsubModalOpen, setSumsubModalOpen] = useState<boolean>(false);
+  const [worldIdVerified, setWorldIdVerified] = useState<boolean>(false);
+  const [worldIdErrorCode, setWorldIdErrorCode] = useState<string>("");
   const [simpleActionKind, setSimpleActionKind] = useState<SimpleActionKind | null>(null);
   const [simpleResultModal, setSimpleResultModal] = useState<SimpleResultModal | null>(null);
   const { open } = useAppKit();
@@ -184,6 +248,10 @@ export default function App() {
   const { walletProvider } = useAppKitProvider<WalletProviderLike>("eip155");
   const simpleWasBusyRef = useRef<boolean>(false);
   const sessionSecretKeyRef = useRef<string>("");
+  const worldIdPollNonceRef = useRef<number>(0);
+  const worldIdPendingAddressRef = useRef<string>("");
+  const sumsubAutoSyncInFlightRef = useRef<boolean>(false);
+  const sumsubAutoSyncCooldownUntilRef = useRef<number>(0);
 
   const provider = useMemo(() => {
     if (!walletProvider) {
@@ -199,20 +267,18 @@ export default function App() {
 
   useEffect(() => {
     const lightClass = "page-theme-light";
-    if (view === "simple") {
-      document.body.classList.add(lightClass);
-    } else {
-      document.body.classList.remove(lightClass);
-    }
+    document.body.classList.add(lightClass);
 
     return () => {
       document.body.classList.remove(lightClass);
     };
-  }, [view]);
+  }, []);
 
   useEffect(() => {
     if (!appKitAddress || !isAppKitConnected) {
       if (account) {
+        worldIdPollNonceRef.current += 1;
+        worldIdPendingAddressRef.current = "";
         setAccount("");
         setChainId(0);
         setSessionSecretKeyHex("");
@@ -220,6 +286,7 @@ export default function App() {
         setPendingDecrypt(null);
         setEncryptionReady(false);
         setSumsubModalOpen(false);
+        setWorldIdVerified(false);
         setStatus("Wallet disconnected");
       }
 
@@ -227,6 +294,8 @@ export default function App() {
     }
 
     if (!account || account.toLowerCase() !== appKitAddress.toLowerCase()) {
+      worldIdPollNonceRef.current += 1;
+      worldIdPendingAddressRef.current = "";
       const restoredSessionSecret = readSessionSecret(appKitAddress);
       setAccount(appKitAddress);
       setSessionSecretKeyHex(restoredSessionSecret);
@@ -234,6 +303,7 @@ export default function App() {
       setPendingDecrypt(null);
       setEncryptionReady(false);
       setSumsubModalOpen(false);
+      setWorldIdVerified(false);
       setStatus("Wallet connected");
       window.setTimeout(() => {
         void refreshOnchainData(appKitAddress);
@@ -242,11 +312,6 @@ export default function App() {
   }, [account, appKitAddress, isAppKitConnected, provider]);
 
   useEffect(() => {
-    if (view !== "simple") {
-      simpleWasBusyRef.current = false;
-      return;
-    }
-
     const inProgress = waitingPacket || refreshingStatus || syncWaiting || (busy && simpleActionKind !== null);
     if (inProgress) {
       simpleWasBusyRef.current = true;
@@ -288,7 +353,6 @@ export default function App() {
     });
     setSimpleActionKind(null);
   }, [
-    view,
     busy,
     waitingPacket,
     refreshingStatus,
@@ -320,6 +384,209 @@ export default function App() {
     await refreshStatusWithRetry();
   }
 
+  function parseSumsubStatus(payload: unknown): SumsubStatusSnapshot {
+    if (!payload || typeof payload !== "object") {
+      return { reviewStatus: "", reviewAnswer: "" };
+    }
+
+    const raw = payload as Record<string, unknown>;
+    const reviewStatus = String(raw.reviewStatus ?? "").trim().toLowerCase();
+
+    let reviewAnswer = "";
+    if (raw.reviewResult && typeof raw.reviewResult === "object") {
+      const reviewResult = raw.reviewResult as Record<string, unknown>;
+      reviewAnswer = String(reviewResult.reviewAnswer ?? "").trim().toLowerCase();
+    }
+
+    return { reviewStatus, reviewAnswer };
+  }
+
+  function isTerminalSumsubStatus(payload: unknown): boolean {
+    const { reviewStatus, reviewAnswer } = parseSumsubStatus(payload);
+    if (reviewStatus === "completed") {
+      return true;
+    }
+    if (reviewAnswer === "green" || reviewAnswer === "red") {
+      return true;
+    }
+    return false;
+  }
+
+  async function triggerAutoSyncFromSumsub(payload: unknown): Promise<void> {
+    if (!isTerminalSumsubStatus(payload)) {
+      return;
+    }
+    if (!provider || !account || verify.ok) {
+      return;
+    }
+    if (sumsubAutoSyncInFlightRef.current) {
+      return;
+    }
+
+    const now = Date.now();
+    if (now < sumsubAutoSyncCooldownUntilRef.current) {
+      return;
+    }
+    sumsubAutoSyncCooldownUntilRef.current = now + 30_000;
+    sumsubAutoSyncInFlightRef.current = true;
+
+    try {
+      setStatus("Sumsub review finished. Syncing onchain status...");
+      await refreshStatusWithRetry();
+    } finally {
+      sumsubAutoSyncInFlightRef.current = false;
+    }
+  }
+
+  async function waitForWorldIdAttestation(userAddress: string): Promise<void> {
+    if (!userAddress) {
+      return;
+    }
+
+    const pollNonce = worldIdPollNonceRef.current + 1;
+    worldIdPollNonceRef.current = pollNonce;
+    const maxAttempts = 18;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      if (pollNonce !== worldIdPollNonceRef.current) {
+        return;
+      }
+
+      const snapshot = await refreshOnchainData(userAddress);
+      if (pollNonce !== worldIdPollNonceRef.current) {
+        return;
+      }
+
+      if (snapshot?.worldIdVerified) {
+        setStatus("World ID linked onchain.");
+        worldIdPendingAddressRef.current = "";
+        return;
+      }
+
+      if (attempt < maxAttempts) {
+        setStatus(`Waiting for CRE World ID attestation... ${attempt}/${maxAttempts}`);
+        await sleep(2500);
+      }
+    }
+
+    if (pollNonce === worldIdPollNonceRef.current) {
+      setStatus("World ID proof accepted. CRE attestation is still pending. You can press Check status.");
+    }
+  }
+
+  async function handleWorldIdVerify(result: ISuccessResult): Promise<void> {
+    if (!provider || !account) {
+      throw new Error("Connect wallet first");
+    }
+
+    setBusy(true);
+    setError("");
+    setWorldIdErrorCode("");
+    setStatus("Submitting World ID proof onchain...");
+
+    try {
+      const onExpectedNetwork = await ensureExpectedNetwork();
+      if (!onExpectedNetwork) {
+        throw new Error("Wrong network for World ID request");
+      }
+
+      if (worldIdPrecheckMode !== "off") {
+        setStatus("Pre-checking World ID proof...");
+        try {
+          const precheckResponse = await fetch(worldIdVerifyEndpoint(env.worldIdAppId), {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              ...result,
+              action: env.worldIdAction,
+              signal_hash: hashSignalToField(account.toLowerCase())
+            })
+          });
+
+          if (!precheckResponse.ok) {
+            const errorBody = await precheckResponse.text();
+            const precheckError = parseWorldIdVerifyError(errorBody, precheckResponse.status);
+            if (worldIdPrecheckMode === "strict") {
+              throw new Error(precheckError);
+            }
+            setStatus(`World ID pre-check failed (${precheckError}). Submitting onchain request...`);
+          }
+        } catch (precheckErr) {
+          if (worldIdPrecheckMode === "strict") {
+            throw precheckErr;
+          }
+          const message = (precheckErr as Error).message;
+          setStatus(`World ID pre-check unavailable (${message}). Submitting onchain request...`);
+        }
+      }
+
+      const { signer, address } = await getActiveSignerAndAddress();
+      const { broker } = makeContracts(signer);
+
+      const tx = await broker.requestWorldIdVerification(
+        result.proof,
+        result.merkle_root,
+        result.nullifier_hash,
+        result.verification_level
+      );
+      const receipt = await tx.wait();
+
+      let requestIdLabel = "";
+      const iface = new Interface(kycBrokerAbi);
+      for (const log of receipt?.logs ?? []) {
+        if (log.address.toLowerCase() !== env.kycBroker.toLowerCase()) {
+          continue;
+        }
+
+        try {
+          const parsed = iface.parseLog(log);
+          if (parsed?.name === "WorldIdVerificationRequested") {
+            requestIdLabel = `#${(parsed.args.worldIdRequestId as bigint).toString()}`;
+            break;
+          }
+        } catch {
+          // Skip unrelated logs.
+        }
+      }
+
+      if (requestIdLabel) {
+        setStatus(`World ID request ${requestIdLabel} submitted. Waiting for CRE verification...`);
+      } else {
+        setStatus("World ID request submitted onchain. Waiting for CRE verification...");
+      }
+
+      worldIdPendingAddressRef.current = address;
+      await refreshOnchainData(address);
+    } catch (err) {
+      worldIdPendingAddressRef.current = "";
+      const message = (err as Error).message;
+      setStatus(`World ID host verification failed: ${message}`);
+      setError(message);
+      throw err;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onWorldIdSuccess(): Promise<void> {
+    setWorldIdErrorCode("");
+    const targetAddress = worldIdPendingAddressRef.current || account;
+    setStatus("World ID proof accepted by app. Waiting for CRE onchain attestation...");
+    if (targetAddress) {
+      void waitForWorldIdAttestation(targetAddress);
+    }
+  }
+
+  async function onWorldIdError(errorState: IErrorState): Promise<void> {
+    const code = String(errorState.code || "unknown_error");
+    const detail = errorState.message?.trim();
+    setWorldIdErrorCode(code);
+    worldIdPendingAddressRef.current = "";
+    setStatus(detail ? `World ID declined (${code}): ${detail}` : `World ID declined (${code}).`);
+  }
+
   async function getActiveSignerAndAddress(): Promise<{ signer: ethers.Signer; address: string }> {
     if (!provider) {
       throw new Error("Provider unavailable");
@@ -336,6 +603,7 @@ export default function App() {
       setPendingDecrypt(null);
       setEncryptionReady(false);
       setSumsubModalOpen(false);
+      setWorldIdVerified(false);
     }
 
     return { signer, address };
@@ -408,15 +676,18 @@ export default function App() {
     ]);
 
     const verifySnapshot = { ok: Boolean(verifyResult[0]), reason: Number(verifyResult[1]) };
+    const attFlags = BigInt(attResult[0]);
+    const isWorldIdLinked = (attFlags & env.worldIdFlag) === env.worldIdFlag && Boolean(attResult[7]) && !Boolean(attResult[6]);
     setVerify(verifySnapshot);
     setAttestation({
-      flags: attResult[0].toString(),
+      flags: attFlags.toString(),
       expiration: Number(attResult[1]),
       riskScore: Number(attResult[2]),
       subjectType: Number(attResult[3]),
       revoked: Boolean(attResult[6]),
       exists: Boolean(attResult[7])
     });
+    setWorldIdVerified(isWorldIdLinked);
     const hasOnchainEncryptionKey = pubKeyHex !== "0x";
     const localSessionSecret =
       account && account.toLowerCase() === user ? sessionSecretKeyRef.current || readSessionSecret(user) : readSessionSecret(user);
@@ -439,6 +710,7 @@ export default function App() {
     return {
       verify: verifySnapshot,
       attestationExists: Boolean(attResult[7]),
+      worldIdVerified: isWorldIdLinked,
       hasOnchainEncryptionKey
     };
   }
@@ -531,6 +803,7 @@ export default function App() {
         })
         .on("idCheck.onApplicantStatusChanged", (payload: unknown) => {
           console.log("Sumsub status update", payload);
+          void triggerAutoSyncFromSumsub(payload);
         })
         .build();
 
@@ -869,15 +1142,14 @@ export default function App() {
 
   const expectedChainId = env.chainId || 0;
   const networkMismatch = chainId > 0 && expectedChainId > 0 && chainId !== expectedChainId;
-  const verifyText = `${String(verify.ok)} (${reasonLabel(verify.reason)})`;
-  const hasRequest = requestId !== "-";
+  const worldIdConfigured = Boolean(env.worldIdAppId && env.worldIdAction);
   const hasSdkToken = sdkTokenPreview !== "-";
-  const waitingDecrypt = Boolean(pendingDecrypt);
   const connectButtonLabel = isAppKitConnected ? "Connected!" : "Connect wallet";
-  const simpleBusy =
-    view === "simple" && (waitingPacket || refreshingStatus || syncWaiting || (busy && simpleActionKind !== null));
+  const simpleBusy = waitingPacket || refreshingStatus || syncWaiting || (busy && simpleActionKind !== null);
   const simpleProgress = getSimpleProgressCopy(status, waitingPacket, refreshingStatus, syncWaiting);
   const simpleVerificationLabel = verify.ok ? "Verified" : hasSdkToken ? "Review in progress" : "Not verified yet";
+  const worldIdVerificationLevel = parseWorldIdVerificationLevel(env.worldIdVerificationLevel);
+  const worldIdPrecheckMode = parseWorldIdPrecheckMode(env.worldIdPrecheckMode);
   const simpleNetworkLabel = networkMismatch ? `Wrong network (${chainId})` : `Network ${expectedChainId || "-"}`;
   const attestationExpirationLabel =
     attestation && attestation.expiration > 0 ? new Date(attestation.expiration * 1000).toISOString().slice(0, 10) : "-";
@@ -885,437 +1157,152 @@ export default function App() {
   const claimAssetStatus = verify.ok ? (hasClaimed ? "Claimed" : "Available") : "Locked";
 
   return (
-    <div className={`page ${view === "simple" ? "page-simple" : ""}`}>
-      {view === "simple" ? null : <div className="mesh mesh-a" />}
-      {view === "simple" ? null : <div className="mesh mesh-b" />}
-
-      <header className={`panel hero reveal ${view === "simple" ? "hero-simple" : ""}`}>
-        {view === "simple" ? (
-          <>
-            <div className="hero-top-row">
-              <div className="view-switch view-switch-inline">
-                <button className="switch-btn" onClick={() => setView("classic")}>
-                  Classic Flow
-                </button>
-                <button className="switch-btn" onClick={() => setView("quick")}>
-                  Quick KYC
-                </button>
-                <button className="switch-btn active" onClick={() => setView("simple")}>
-                  Simple UX
-                </button>
-              </div>
-              <div className="simple-top-actions">
-                <button
-                  className={`top-action-btn top-connect-btn ${isAppKitConnected ? "is-connected" : ""}`}
-                  onClick={connectWalletFromSimple}
-                  disabled={busy}
-                >
-                  <span className={`wallet-dot ${isAppKitConnected ? "on" : "off"}`} />
-                  <span>{connectButtonLabel}</span>
-                </button>
-                <button
-                  className="top-action-btn"
-                  onClick={refreshStatusFromSimple}
-                  disabled={busy || !account || networkMismatch || waitingPacket}
-                >
-                  {refreshingStatus ? "Checking..." : "Check status"}
-                </button>
-                <span className={`chain-id-text ${networkMismatch ? "warn" : ""}`}>Chain {chainId || expectedChainId || "-"}</span>
-                <span className={`pill ${verify.ok ? "ok" : "warn"}`}>{verify.ok ? "Policy pass" : "Policy blocked"}</span>
-              </div>
-            </div>
-          </>
-        ) : (
-          <div className="hero-row">
-            <p className="eyebrow">Trust Registry MVP</p>
+    <div className="page page-simple">
+      <header className="panel hero reveal hero-simple">
+        <div className="hero-top-row">
+          <div className="simple-top-actions">
+            <button
+              className={`top-action-btn top-connect-btn ${isAppKitConnected ? "is-connected" : ""}`}
+              onClick={connectWalletFromSimple}
+              disabled={busy}
+            >
+              <span className={`wallet-dot ${isAppKitConnected ? "on" : "off"}`} />
+              <span>{connectButtonLabel}</span>
+            </button>
+            <button
+              className="top-action-btn"
+              onClick={refreshStatusFromSimple}
+              disabled={busy || !account || networkMismatch || waitingPacket}
+            >
+              {refreshingStatus ? "Checking..." : "Check status"}
+            </button>
+            <span className={`chain-id-text ${networkMismatch ? "warn" : ""}`}>Chain {chainId || expectedChainId || "-"}</span>
             <span className={`pill ${verify.ok ? "ok" : "warn"}`}>{verify.ok ? "Policy pass" : "Policy blocked"}</span>
           </div>
-        )}
-        {view === "simple" ? (
-          <div className="hero-main-row">
-            <div className="hero-main-copy">
-              <h1>
-                PassStore <span>+ Sumsub</span>
-              </h1>
-              <p>No backend. Encrypted SDK token delivery via CRE and policy-gated onchain access.</p>
-            </div>
-            {!verify.ok ? (
-              <div className="hero-main-cta">
-                <button
-                  className="simple-btn primary hero-cta-btn"
-                  onClick={goToKycFromSimple}
-                  disabled={busy || !account || networkMismatch || waitingPacket}
-                >
-                  Go to KYC
-                </button>
-              </div>
-            ) : null}
-          </div>
-        ) : (
-          <>
+        </div>
+
+        <div className="hero-main-row">
+          <div className="hero-main-copy">
             <h1>
               PassStore <span>+ Sumsub</span>
             </h1>
             <p>No backend. Encrypted SDK token delivery via CRE and policy-gated onchain access.</p>
-            <div className="view-switch">
-              <button className={`switch-btn ${view === "classic" ? "active" : ""}`} onClick={() => setView("classic")}>
-                Classic Flow
-              </button>
-              <button className={`switch-btn ${view === "quick" ? "active" : ""}`} onClick={() => setView("quick")}>
-                Quick KYC
-              </button>
-              <button className="switch-btn" onClick={() => setView("simple")}>
-                Simple UX
+          </div>
+          {!verify.ok ? (
+            <div className="hero-main-cta">
+              <button
+                className="simple-btn primary hero-cta-btn"
+                onClick={goToKycFromSimple}
+                disabled={busy || !account || networkMismatch || waitingPacket}
+              >
+                Go to KYC
               </button>
             </div>
-          </>
-        )}
+          ) : null}
+        </div>
       </header>
 
-      {view === "simple" ? (
-        <>
-          <div className="simple-layout reveal">
-            <section className="simple-panel">
-              <h2 className="simple-section-title">Identity Access</h2>
-              <div className="simple-card">
-                <p>{verify.ok ? "You are verified. Protected actions are now available." : "Complete verification to unlock access."}</p>
-                <div className="simple-identity-box">
-                  <div className="simple-attestation">
-                    <div className="simple-att-item">
-                      <span>Exists</span>
-                      <strong>{String(attestation?.exists ?? false)}</strong>
-                    </div>
-                    <div className="simple-att-item">
-                      <span>Revoked</span>
-                      <strong>{String(attestation?.revoked ?? false)}</strong>
-                    </div>
-                    <div className="simple-att-item">
-                      <span>Flags</span>
-                      <strong>{attestation?.flags ?? "0"}</strong>
-                    </div>
-                    <div className="simple-att-item">
-                      <span>Expires</span>
-                      <strong>{attestationExpirationLabel}</strong>
-                    </div>
-                    <div className="simple-att-item">
-                      <span>Risk</span>
-                      <strong>{attestation?.riskScore ?? 0}</strong>
-                    </div>
-                    <div className="simple-att-item">
-                      <span>Subject</span>
-                      <strong>{attestation?.subjectType ?? 0}</strong>
-                    </div>
-                  </div>
-                  <div className="simple-tags">
-                    <span className="simple-tag">{account ? shortAddress(account) : "Wallet not connected"}</span>
-                    <span className={`simple-tag ${verify.ok ? "ok" : "warn"}`}>{simpleVerificationLabel}</span>
-                    <span className={`simple-tag ${networkMismatch ? "warn" : ""}`}>{simpleNetworkLabel}</span>
-                  </div>
-                </div>
-              </div>
-
-              {error ? <div className="simple-error">Error: {error}</div> : null}
-              {sumsubModalOpen ? <p className="simple-note">Verification form is open. Complete it and then press Check status.</p> : null}
-            </section>
-            <section className="simple-panel simple-assets-panel">
-              <h2>Available assets</h2>
-              <p>Demo has 2 gated assets.</p>
-              <div className="simple-asset-row">
-                <div className="simple-asset-meta">
-                  <span>AccessPass</span>
-                  <strong>{accessAssetStatus}</strong>
-                </div>
-                <button
-                  className="simple-asset-btn"
-                  onClick={mintAccessPass}
-                  disabled={busy || !account || networkMismatch || !verify.ok || hasMinted}
-                >
-                  {hasMinted ? "Received" : "Get"}
-                </button>
-              </div>
-              <div className="simple-asset-row">
-                <div className="simple-asset-meta">
-                  <span>ClaimDrop</span>
-                  <strong>{claimAssetStatus}</strong>
-                </div>
-                <button
-                  className="simple-asset-btn"
-                  onClick={claimDrop}
-                  disabled={busy || !account || networkMismatch || !verify.ok || hasClaimed}
-                >
-                  {hasClaimed ? "Claimed" : "Claim"}
-                </button>
-              </div>
-            </section>
-          </div>
-        </>
-      ) : (
-        <div className="layout">
-        <section className="panel reveal">
-          <div className="section-head">
-            <h2>User Flow</h2>
-            <span className={`pill ${networkMismatch ? "warn" : "ok"}`}>
-              {networkMismatch ? `Wrong network (${chainId})` : `Chain ${chainId || "-"}`}
-            </span>
-          </div>
-
-          {view === "classic" ? (
-            <>
-              <div className="flow-block">
-                <h3>Sequence</h3>
-                <div className="steps">
-                  <article className={`step ${account && !networkMismatch ? "done" : account ? "warn" : "active"}`}>
-                    <span className="step-index">1</span>
-                    <div className="step-content">
-                      <p className="step-title">Connect wallet on chain {expectedChainId || "31337"}</p>
-                      <p className="step-note">Use Localhost 8545 / chainId 31337 for this demo.</p>
-                    </div>
-                    <span className="step-badge">{account ? (networkMismatch ? "wrong network" : "done") : "now"}</span>
-                  </article>
-
-                  <article className={`step ${encryptionReady ? "done" : account ? "active" : "pending"}`}>
-                    <span className="step-index">2</span>
-                    <div className="step-content">
-                      <p className="step-title">Generate session key</p>
-                      <p className="step-note">Click Enable encryption to create a local session key and store pubkey onchain.</p>
-                    </div>
-                    <span className="step-badge">{encryptionReady ? "done" : account ? "now" : "pending"}</span>
-                  </article>
-
-                  <article className={`step ${hasSdkToken ? "done" : hasRequest ? "active" : "pending"}`}>
-                    <span className="step-index">3</span>
-                    <div className="step-content">
-                      <p className="step-title">Start KYC and fetch SDK token</p>
-                      <p className="step-note">Request session, wait CRE token packet, decrypt token locally in browser.</p>
-                    </div>
-                    <span className="step-badge">
-                      {hasSdkToken ? "done" : waitingPacket ? "waiting CRE" : waitingDecrypt ? "retry" : hasRequest ? "pending" : "pending"}
-                    </span>
-                  </article>
-
-                  <article className={`step ${verify.ok ? "done" : hasSdkToken ? "active" : "pending"}`}>
-                    <span className="step-index">4</span>
-                    <div className="step-content">
-                      <p className="step-title">Complete Sumsub and request onchain sync</p>
-                      <p className="step-note">After GREEN, press Sync + refresh status to trigger CRE update.</p>
-                    </div>
-                    <span className="step-badge">{verify.ok ? "done" : hasSdkToken ? "waiting review" : "pending"}</span>
-                  </article>
-                </div>
-              </div>
-
-              <div className="button-grid">
-                <button className="btn strong" onClick={connectWallet} disabled={busy}>
-                  {connectButtonLabel}
-                </button>
-                <button
-                  className="btn"
-                  onClick={refreshStatusWithRetry}
-                  disabled={busy || !account || networkMismatch || waitingPacket}
-                >
-                  {refreshingStatus ? "Refreshing..." : "Sync + refresh status"}
-                </button>
-                <button
-                  className="btn"
-                  onClick={enableEncryption}
-                  disabled={busy || !account || networkMismatch || waitingPacket}
-                >
-                  Enable encryption
-                </button>
-                <button
-                  className="btn strong"
-                  onClick={startVerification}
-                  disabled={busy || !account || !encryptionReady || networkMismatch || waitingPacket}
-                >
-                  Start verification
-                </button>
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="flow-block quick-flow">
-                <h3>Quick KYC Flow</h3>
-                <div className="steps">
-                  <article className={`step ${account && !networkMismatch ? "done" : account ? "warn" : "active"}`}>
-                    <span className="step-index">1</span>
-                    <div className="step-content">
-                      <p className="step-title">Connect wallet</p>
-                      <p className="step-note">Use chain {expectedChainId || "31337"} to continue.</p>
-                    </div>
-                    <span className="step-badge">{account ? (networkMismatch ? "wrong network" : "done") : "now"}</span>
-                  </article>
-                  <article className={`step ${hasRequest || waitingPacket ? "active" : account ? "pending" : "pending"}`}>
-                    <span className="step-index">2</span>
-                    <div className="step-content">
-                      <p className="step-title">Go to KYC</p>
-                      <p className="step-note">One click runs: enable encryption -&gt; start verification.</p>
-                    </div>
-                    <span className="step-badge">{waitingPacket ? "waiting CRE" : hasRequest ? "requested" : "pending"}</span>
-                  </article>
-                  <article className={`step ${hasSdkToken || sumsubModalOpen ? "active" : "pending"}`}>
-                    <span className="step-index">3</span>
-                    <div className="step-content">
-                      <p className="step-title">Complete Sumsub in modal</p>
-                      <p className="step-note">WebSDK opens automatically in modal window.</p>
-                    </div>
-                    <span className="step-badge">{sumsubModalOpen ? "open" : hasSdkToken ? "started" : "pending"}</span>
-                  </article>
-                  <article className={`step ${verify.ok ? "done" : syncWaiting || hasSdkToken ? "active" : "pending"}`}>
-                    <span className="step-index">4</span>
-                    <div className="step-content">
-                      <p className="step-title">Wait onchain sync</p>
-                      <p className="step-note">Button sends onchain sync request, then UI waits for updated verifyUser.</p>
-                    </div>
-                    <span className="step-badge">{verify.ok ? "done" : syncWaiting ? "syncing..." : "pending"}</span>
-                  </article>
-                </div>
-              </div>
-
-              <div className="button-grid quick-grid">
-                <button className="btn strong" onClick={connectWallet} disabled={busy}>
-                  {connectButtonLabel}
-                </button>
-                <button
-                  className={`btn strong quick-cta ${account && !busy && !networkMismatch ? "pulse" : ""}`}
-                  onClick={goToKyc}
-                  disabled={busy || !account || networkMismatch || waitingPacket}
-                >
-                  Go to KYC
-                </button>
-              </div>
-              <button className="link-btn" onClick={refreshStatusWithRetry} disabled={busy || !account || networkMismatch}>
-                {refreshingStatus ? "Checking status..." : "Sync + check status"}
-              </button>
-            </>
-          )}
-
-          <p className="muted">Connect wallet opens default AppKit modal (installed wallets are marked there).</p>
-
-          <div className="level-lock">
-            <span className="level-label">KYC Level (ENV)</span>
-            <span className="level-pill">{env.kycLevelName}</span>
-          </div>
-
-          <div className="kv-grid">
-            <div className="kv">
-              <span>Account</span>
-              <strong>{shortAddress(account)}</strong>
-            </div>
-            <div className="kv">
-              <span>Expected Chain</span>
-              <strong>{expectedChainId || "-"}</strong>
-            </div>
-            <div className="kv">
-              <span>Encryption</span>
-              <strong>{encryptionReady ? "Enabled" : "Missing"}</strong>
-            </div>
-            <div className="kv">
-              <span>Request ID</span>
-              <strong>{requestId}</strong>
-            </div>
-            <div className="kv">
-              <span>SDK token</span>
-              <strong>{sdkTokenPreview}</strong>
-            </div>
-            <div className="kv">
-              <span>verifyUser</span>
-              <strong>{verifyText}</strong>
-            </div>
-          </div>
-
-          <div className={`status-box ${refreshingStatus || syncWaiting || waitingPacket ? "live" : ""}`}>
-            <span className={`status-dot ${refreshingStatus || syncWaiting || waitingPacket ? "spin" : ""}`} />
-            Status: {status}
-          </div>
-          {error ? <div className="error">Error: {error}</div> : null}
-          {sumsubModalOpen ? <p className="muted">Sumsub WebSDK is open in modal.</p> : null}
-        </section>
-
-        <div className="stack">
-          <section className="panel reveal delay-1">
-            <h2>Demo Apps</h2>
-            <div className="button-grid single">
-              <button className="btn strong" onClick={mintAccessPass} disabled={busy || !account || networkMismatch}>
-                Mint AccessPass
-              </button>
-              <button className="btn" onClick={claimDrop} disabled={busy || !account || networkMismatch}>
-                Claim Drop
-              </button>
-            </div>
-            <div className="kv-grid compact">
-              <div className="kv">
-                <span>AccessPass minted</span>
-                <strong>{String(hasMinted)}</strong>
-              </div>
-              <div className="kv">
-                <span>ClaimDrop claimed</span>
-                <strong>{String(hasClaimed)}</strong>
-              </div>
-            </div>
-          </section>
-
-          <section className="panel reveal delay-2">
-            <h2>Attestation Snapshot</h2>
-            {attestation ? (
-              <div className="kv-grid compact">
-                <div className="kv">
+      <div className="simple-layout reveal">
+        <section className="simple-panel">
+          <h2 className="simple-section-title">Identity Access</h2>
+          <div className="simple-card">
+            <p>{verify.ok ? "You are verified. Protected actions are now available." : "Complete verification to unlock access."}</p>
+            <div className="simple-identity-box">
+              <div className="simple-attestation">
+                <div className="simple-att-item">
                   <span>Exists</span>
-                  <strong>{String(attestation.exists)}</strong>
+                  <strong>{String(attestation?.exists ?? false)}</strong>
                 </div>
-                <div className="kv">
+                <div className="simple-att-item">
                   <span>Revoked</span>
-                  <strong>{String(attestation.revoked)}</strong>
+                  <strong>{String(attestation?.revoked ?? false)}</strong>
                 </div>
-                <div className="kv">
+                <div className="simple-att-item">
                   <span>Flags</span>
-                  <strong>{attestation.flags}</strong>
+                  <strong>{attestation?.flags ?? "0"}</strong>
                 </div>
-                <div className="kv">
-                  <span>Expiration</span>
-                  <strong>{attestation.expiration > 0 ? new Date(attestation.expiration * 1000).toISOString() : "-"}</strong>
+                <div className="simple-att-item">
+                  <span>Expires</span>
+                  <strong>{attestationExpirationLabel}</strong>
                 </div>
-                <div className="kv">
-                  <span>Risk score</span>
-                  <strong>{attestation.riskScore}</strong>
+                <div className="simple-att-item">
+                  <span>Risk</span>
+                  <strong>{attestation?.riskScore ?? 0}</strong>
                 </div>
-                <div className="kv">
-                  <span>Subject type</span>
-                  <strong>{attestation.subjectType}</strong>
+                <div className="simple-att-item">
+                  <span>Subject</span>
+                  <strong>{attestation?.subjectType ?? 0}</strong>
                 </div>
               </div>
-            ) : (
-              <p className="muted">No attestation loaded yet.</p>
-            )}
-          </section>
-
-          <section className="panel reveal delay-3">
-            <h2>Admin (read-only)</h2>
-            <div className="kv-grid compact">
-              <div className="kv">
-                <span>CRE issuer</span>
-                <strong>{env.creIssuer ?? "not set"}</strong>
-              </div>
-              <div className="kv">
-                <span>Issuer allowed</span>
-                <strong>{creIssuerAllowed === null ? "unknown" : String(creIssuerAllowed)}</strong>
-              </div>
-              <div className="kv">
-                <span>Policy ID</span>
-                <strong>{env.policyId.toString()}</strong>
-              </div>
-              <div className="kv">
-                <span>Registry</span>
-                <strong>{env.passRegistry}</strong>
-              </div>
-              <div className="kv">
-                <span>Broker</span>
-                <strong>{env.kycBroker}</strong>
+              <div className="simple-tags">
+                <span className="simple-tag">{account ? shortAddress(account) : "Wallet not connected"}</span>
+                <span className={`simple-tag ${verify.ok ? "ok" : "warn"}`}>{simpleVerificationLabel}</span>
+                <span className={`simple-tag ${networkMismatch ? "warn" : ""}`}>{simpleNetworkLabel}</span>
               </div>
             </div>
-          </section>
-        </div>
+          </div>
+
+          {error ? <div className="simple-error">Error: {error}</div> : null}
+          {sumsubModalOpen ? <p className="simple-note">Verification form is open. Complete it and then press Check status.</p> : null}
+          {worldIdConfigured ? (
+            <div className="simple-worldid-row">
+              <IDKitWidget
+                app_id={env.worldIdAppId as `app_${string}`}
+                action={env.worldIdAction}
+                signal={account.toLowerCase()}
+                verification_level={worldIdVerificationLevel}
+                handleVerify={handleWorldIdVerify}
+                onSuccess={onWorldIdSuccess}
+                onError={onWorldIdError}
+              >
+                {({ open }: { open: () => void }) => (
+                  <button
+                    className={`simple-btn ${worldIdVerified ? "secondary" : "primary"}`}
+                    onClick={open}
+                    disabled={busy || !account || networkMismatch}
+                  >
+                    {worldIdVerified ? "World ID verified" : "Verify with World ID"}
+                  </button>
+                )}
+              </IDKitWidget>
+              <span className={`simple-worldid-badge ${worldIdVerified ? "ok" : "warn"}`}>
+                {worldIdVerified ? "World ID: linked" : "World ID: pending"}
+              </span>
+            </div>
+          ) : null}
+          {worldIdErrorCode ? <p className="simple-note">World ID error code: {worldIdErrorCode}</p> : null}
+        </section>
+        <section className="simple-panel simple-assets-panel">
+          <h2>Available assets</h2>
+          <p>Demo has 2 gated assets.</p>
+          <div className="simple-asset-row">
+            <div className="simple-asset-meta">
+              <span>AccessPass</span>
+              <strong>{accessAssetStatus}</strong>
+            </div>
+            <button
+              className="simple-asset-btn"
+              onClick={mintAccessPass}
+              disabled={busy || !account || networkMismatch || !verify.ok || hasMinted}
+            >
+              {hasMinted ? "Received" : "Get"}
+            </button>
+          </div>
+          <div className="simple-asset-row">
+            <div className="simple-asset-meta">
+              <span>ClaimDrop</span>
+              <strong>{claimAssetStatus}</strong>
+            </div>
+            <button
+              className="simple-asset-btn"
+              onClick={claimDrop}
+              disabled={busy || !account || networkMismatch || !verify.ok || hasClaimed}
+            >
+              {hasClaimed ? "Claimed" : "Claim"}
+            </button>
+          </div>
+        </section>
       </div>
-      )}
 
       {simpleBusy ? (
         <div className="simple-loading-backdrop">
@@ -1328,7 +1315,7 @@ export default function App() {
         </div>
       ) : null}
 
-      {view === "simple" && simpleResultModal ? (
+      {simpleResultModal ? (
         <div className="simple-result-backdrop">
           <div className={`simple-result-card ${simpleResultModal.isError ? "is-error" : ""}`}>
             <h3>{simpleResultModal.title}</h3>

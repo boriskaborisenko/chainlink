@@ -17,3 +17,4 @@ contracts/.xdg
 CRE_GO/.gocache
 CRE_GO/.gomodcache
 CRE_GO/.gopath
+run_ngrok_frontend.sh
