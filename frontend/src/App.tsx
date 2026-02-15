@@ -1500,15 +1500,15 @@ export default function App() {
                   </div>
                   <p className="asset-expire">Verification expires: {DEMO_VERIFICATION_EXPIRES}</p>
                   <div className="asset-flag-row">
-                    {asset.requirement === "none" ? <span className="simple-check-badge ok">(available)</span> : null}
-                    {asset.requirement === "kyc" ? <span className={`simple-check-badge ${verify.ok ? "ok" : "warn"}`}>(KYC)</span> : null}
+                    {asset.requirement === "none" ? <span className="simple-check-badge ok">available</span> : null}
+                    {asset.requirement === "kyc" ? <span className={`simple-check-badge ${verify.ok ? "ok" : "warn"}`}>KYC</span> : null}
                     {asset.requirement === "worldid" ? (
-                      <span className={`simple-check-badge ${worldIdVerified ? "ok" : "warn"}`}>(World ID)</span>
+                      <span className={`simple-check-badge ${worldIdVerified ? "ok" : "warn"}`}>World ID</span>
                     ) : null}
                     {asset.requirement === "both" ? (
                       <>
-                        <span className={`simple-check-badge ${verify.ok ? "ok" : "warn"}`}>(KYC)</span>
-                        <span className={`simple-check-badge ${worldIdVerified ? "ok" : "warn"}`}>(World ID)</span>
+                        <span className={`simple-check-badge ${verify.ok ? "ok" : "warn"}`}>KYC</span>
+                        <span className={`simple-check-badge ${worldIdVerified ? "ok" : "warn"}`}>World ID</span>
                       </>
                     ) : null}
                   </div>
