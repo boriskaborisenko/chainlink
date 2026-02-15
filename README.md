@@ -1,10 +1,10 @@
 # PassStore + Sumsub + Chainlink CRE (No Backend)
 
-Monorepo with three packages:
+Monorepo with core components:
 
 - `contracts/` - Solidity contracts (registry, broker, demo gated apps).
 - `cre/` - Chainlink CRE unified worker (SDK token issue + KYC sync polling in one loop).
-- `CRE_GO/` - Backup Go implementation of CRE workers (same flow as `cre/`).
+- `DON_FILES/` - Deployment-ready CRE/DON folder split into `TS/` workflows and `GO/` backup worker.
 - `frontend/` - React app for wallet flow, Sumsub WebSDK launch, and gated actions.
 
 The architecture is provider-agnostic: Sumsub is the first integrated KYC provider, but issuer workflows can be extended to other providers without changing the core gating pattern.
@@ -16,8 +16,9 @@ The architecture is provider-agnostic: Sumsub is the first integrated KYC provid
 3. User calls `requestKyc(levelName)`.
 4. Unified CRE worker pass `IssueSdkToken` catches `KycRequested`, asks Sumsub for SDK token, encrypts token for user key, writes ciphertext onchain.
 5. Frontend reads ciphertext, decrypts locally with session secret key, and launches Sumsub WebSDK.
-6. The same unified CRE worker then runs pass `SyncKycStatus`, polls Sumsub statuses, and updates `PassRegistry` (`attest`/`revoke`).
-7. Demo contracts (`AccessPass`, `ClaimDrop`) gate calls via `PassRegistry.verifyUser`.
+6. User clicks `Sync + refresh status`, which calls `KycSessionBroker.requestKycSync()` and emits `KycSyncRequested`.
+7. The same unified CRE worker pass `SyncKycStatus` catches `KycSyncRequested`, fetches Sumsub status, and updates `PassRegistry` (`attest`/`revoke`).
+8. Demo contracts (`AccessPass`, `ClaimDrop`) gate calls via `PassRegistry.verifyUser`.
 
 ## Quick Start
 
@@ -38,6 +39,9 @@ npm run node:local -w contracts
 - `contracts/.env.example` -> `contracts/.env`
 - `cre/.env.example` -> `cre/.env`
 - `frontend/.env.example` -> `frontend/.env`
+- optional for WalletConnect in `frontend/.env`:
+  - `VITE_WC_PROJECT_ID`
+  - `VITE_RPC_URL`
 
 4. Deploy contracts:
 
@@ -45,6 +49,8 @@ npm run node:local -w contracts
 npm run compile -w contracts
 npm run deploy:local -w contracts
 ```
+
+If you are upgrading from an older revision, redeploy is required because `KycSessionBroker` ABI changed (`requestKycSync`, `KycSyncRequested`).
 
 5. Copy deployed addresses:
 
@@ -63,6 +69,7 @@ npm run deploy:local -w contracts
 
 - `SUMSUB_APP_TOKEN`
 - `SUMSUB_SECRET_KEY`
+- `SUMSUB_USER_ID_MODE` (`wallet_request` recommended for sandbox demos to avoid instant "already approved")
 - optional endpoint overrides if your Sumsub project uses different paths.
 
 7. Start CRE worker:
@@ -87,7 +94,7 @@ npm run dev -w frontend
 4. Wait for `IssueSdkToken` worker to store ciphertext in broker packet.
 5. Frontend decrypts packet locally with session secret key and launches Sumsub WebSDK.
 6. In Sumsub Sandbox, simulate review result (`GREEN` or `RED`).
-7. Wait for `SyncKycStatus` tick:
+7. Click `Sync + refresh status` (this sends `requestKycSync()` and then polls onchain view):
    - `GREEN` -> `PassRegistry.attest`
    - `RED` -> `PassRegistry.revoke`
 8. Try demo actions:

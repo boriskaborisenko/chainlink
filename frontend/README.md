@@ -11,12 +11,19 @@ React + Vite app that drives the full no-backend user flow.
    - polls `KycSessionBroker.getPacket(requestId)`
    - decrypts ciphertext locally in browser using the session secret key
    - launches Sumsub WebSDK in-page
-4. Track registry status and gated actions (`Mint AccessPass`, `Claim Drop`).
+4. After Sumsub flow, click `Sync + refresh status`:
+   - sends `requestKycSync()` onchain
+   - waits for CRE to process `KycSyncRequested`
+   - refreshes `verifyUser`
+5. Track gated actions (`Mint AccessPass`, `Claim Drop`).
 
 ## Run
 
 1. Copy `.env.example` to `.env` and fill contract addresses.
-2. Start:
+2. Optional WalletConnect:
+   - set `VITE_WC_PROJECT_ID`
+   - set `VITE_RPC_URL` for your target chain
+3. Start:
 
 ```bash
 npm run dev

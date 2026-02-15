@@ -12,14 +12,27 @@ contract KycSessionBroker {
 
     address public admin;
     uint256 public nextRequestId;
+    uint256 public nextSyncRequestId;
+    uint256 public nextWorldIdRequestId;
+    uint64 public syncCooldown;
 
     mapping(address => bool) public isIssuer;
     mapping(address => bytes) public encryptionPubKey;
+    mapping(address => bool) public hasKycRequest;
+    mapping(address => uint256) public latestKycRequestId;
+    mapping(address => uint64) public lastSyncRequestAt;
     mapping(uint256 => TokenPacket) private packets;
 
     event IssuerSet(address indexed issuer, bool allowed);
     event EncryptionPubKeySet(address indexed user, bytes pubKey);
     event KycRequested(uint256 indexed requestId, address indexed user, string levelName);
+    event KycSyncRequested(uint256 indexed syncRequestId, address indexed user, uint256 indexed requestId);
+    event WorldIdVerificationRequested(
+        uint256 indexed worldIdRequestId,
+        address indexed user,
+        string nullifierHash,
+        string verificationLevel
+    );
     event TokenStored(uint256 indexed requestId, address indexed user, uint64 expiresAt);
     event TokenConsumed(uint256 indexed requestId, address indexed user);
 
@@ -35,6 +48,7 @@ contract KycSessionBroker {
 
     constructor() {
         admin = msg.sender;
+        syncCooldown = 60;
     }
 
     function setIssuer(address issuer, bool allowed) external onlyAdmin {
@@ -48,6 +62,10 @@ contract KycSessionBroker {
         emit EncryptionPubKeySet(msg.sender, pubKey);
     }
 
+    function setSyncCooldown(uint64 newCooldown) external onlyAdmin {
+        syncCooldown = newCooldown;
+    }
+
     function requestKyc(string calldata levelName) external returns (uint256 requestId) {
         require(encryptionPubKey[msg.sender].length > 0, "KycSessionBroker: missing pub key");
 
@@ -58,7 +76,50 @@ contract KycSessionBroker {
         packet.user = msg.sender;
         packet.exists = true;
 
+        hasKycRequest[msg.sender] = true;
+        latestKycRequestId[msg.sender] = requestId;
+
         emit KycRequested(requestId, msg.sender, levelName);
+    }
+
+    function requestKycSync() external returns (uint256 syncRequestId) {
+        require(hasKycRequest[msg.sender], "KycSessionBroker: no kyc request");
+
+        uint64 cooldown = syncCooldown;
+        if (cooldown > 0) {
+            uint64 availableAt = lastSyncRequestAt[msg.sender] + cooldown;
+            require(block.timestamp >= availableAt, "KycSessionBroker: sync cooldown");
+        }
+
+        uint256 requestId = latestKycRequestId[msg.sender];
+
+        syncRequestId = nextSyncRequestId;
+        nextSyncRequestId = syncRequestId + 1;
+
+        lastSyncRequestAt[msg.sender] = uint64(block.timestamp);
+        emit KycSyncRequested(syncRequestId, msg.sender, requestId);
+    }
+
+    function requestWorldIdVerification(
+        string calldata proof,
+        string calldata merkleRoot,
+        string calldata nullifierHash,
+        string calldata verificationLevel
+    ) external returns (uint256 worldIdRequestId) {
+        require(bytes(proof).length > 0, "KycSessionBroker: empty proof");
+        require(bytes(merkleRoot).length > 0, "KycSessionBroker: empty merkle root");
+        require(bytes(nullifierHash).length > 0, "KycSessionBroker: empty nullifier hash");
+        require(bytes(verificationLevel).length > 0, "KycSessionBroker: empty verification level");
+
+        worldIdRequestId = nextWorldIdRequestId;
+        nextWorldIdRequestId = worldIdRequestId + 1;
+
+        emit WorldIdVerificationRequested(
+            worldIdRequestId,
+            msg.sender,
+            nullifierHash,
+            verificationLevel
+        );
     }
 
     function storeEncryptedToken(

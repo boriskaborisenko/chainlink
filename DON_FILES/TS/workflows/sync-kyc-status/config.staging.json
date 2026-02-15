@@ -3,7 +3,6 @@
   "passRegistryAddress": "0x0000000000000000000000000000000000000000",
   "kycBrokerAddress": "0x0000000000000000000000000000000000000000",
   "kycLevelName": "basic-kyc",
-  "cron": "*/2 * * * *",
   "attestationExpirationDays": 180,
   "flagHuman": 1,
   "sumsubBaseUrl": "https://api.sumsub.com"

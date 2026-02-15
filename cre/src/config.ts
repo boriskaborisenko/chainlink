@@ -29,6 +29,21 @@ function numberEnv(name: string, fallback: number): number {
   return parsed;
 }
 
+type SumsubUserIdMode = "wallet" | "wallet_request";
+
+function sumsubUserIdModeEnv(name: string, fallback: SumsubUserIdMode): SumsubUserIdMode {
+  const raw = process.env[name]?.trim().toLowerCase();
+  if (!raw) {
+    return fallback;
+  }
+
+  if (raw === "wallet" || raw === "wallet_request") {
+    return raw;
+  }
+
+  throw new Error(`Invalid ${name}: ${raw}. Allowed values: wallet, wallet_request`);
+}
+
 export const config = {
   rpcUrl: requireEnv("RPC_URL"),
   creSignerPk: requireEnv("CRE_SIGNER_PK"),
@@ -40,6 +55,8 @@ export const config = {
   sumsubSdkTokenPath: process.env.SUMSUB_SDK_TOKEN_PATH ?? "/resources/accessTokens/sdk",
   sumsubStatusPathTemplate:
     process.env.SUMSUB_STATUS_PATH_TEMPLATE ?? "/resources/applicants/-;externalUserId={userId}/one",
+  // "wallet_request" avoids immediate "already approved" in sandbox by using a fresh externalUserId per request.
+  sumsubUserIdMode: sumsubUserIdModeEnv("SUMSUB_USER_ID_MODE", "wallet_request"),
   defaultLevelName: process.env.KYC_LEVEL_NAME ?? process.env.DEFAULT_LEVEL_NAME ?? "basic-kyc",
   tokenTtlSeconds: numberEnv("TOKEN_TTL_SECONDS", 600),
   // Fast loop for onchain KycRequested -> SDK packet delivery.
@@ -49,5 +66,9 @@ export const config = {
   syncPollIntervalMs: numberEnv("SYNC_POLL_INTERVAL_MS", 120000),
   attestationExpirationDays: numberEnv("ATTESTATION_EXPIRATION_DAYS", 180),
   flagHuman: BigInt(numberEnv("FLAG_HUMAN", 1)),
+  flagWorldId: BigInt(numberEnv("FLAG_WORLD_ID", 2)),
+  worldIdAppId: process.env.WORLD_ID_APP_ID?.trim() ?? "",
+  worldIdAction: process.env.WORLD_ID_ACTION?.trim() ?? "",
+  worldIdVerifyEndpoint: process.env.WORLD_ID_VERIFY_ENDPOINT?.trim() ?? "",
   stateFile: process.env.STATE_FILE ?? ".cre-state.json"
 };

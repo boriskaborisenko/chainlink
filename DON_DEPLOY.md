@@ -11,7 +11,7 @@
 Минимально у вас должно быть 2 handler'а:
 
 1. `IssueSdkToken` (trigger: EVM Log `KycRequested`)
-2. `SyncKycStatus` (trigger: Cron, например каждые 1-5 минут)
+2. `SyncKycStatus` (trigger: EVM Log `KycSyncRequested`)
 
 ## 1) Preconditions
 
@@ -133,9 +133,11 @@ cre workflow delete ./<workflow-folder> --target production-settings
 ## 9) Operational notes для PassStore
 
 1. `IssueSdkToken` должен слушать `KycRequested` и писать `storeEncryptedToken(...)`.
-2. `SyncKycStatus` должен опрашивать Sumsub и писать `attest(...)`/`revoke(...)`.
+2. `SyncKycStatus` должен слушать `KycSyncRequested`, опрашивать Sumsub и писать `attest(...)`/`revoke(...)`.
 3. KYC level берите из ENV/secret-конфига workflow, а не из UI как source of truth.
 4. Для 404 `Applicant not found` трактуйте как `PENDING`, не как фатальную ошибку.
+5. Редкий cron можно оставить только как safety-net, но не как основной UX-триггер.
+6. Frontend должен вызывать `requestKycSync()` (например кнопка `Sync + refresh status`) после завершения KYC.
 
 ## 10) Быстрый runbook (команды)
 

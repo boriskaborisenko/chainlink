@@ -5,7 +5,7 @@ Contains MVP smart contracts for no-backend PassStore architecture.
 ## Contracts
 
 - `PassRegistry.sol` - attestations, issuer allowlist, policies, and `verifyUser`.
-- `KycSessionBroker.sol` - stores encryption keys, KYC requests, and encrypted SDK token packets.
+- `KycSessionBroker.sol` - stores encryption keys, KYC requests, encrypted SDK token packets, and user-triggered sync requests (`requestKycSync`).
 - `AccessPass.sol` - demo mint gated by `verifyUser`.
 - `ClaimDrop.sol` - demo claim gated by `verifyUser`.
 
@@ -29,4 +29,4 @@ npm run check:solcjs
 ## Key Events
 
 - `PassRegistry.Attested`, `PassRegistry.Revoked`
-- `KycSessionBroker.KycRequested`, `KycSessionBroker.TokenStored`
+- `KycSessionBroker.KycRequested`, `KycSessionBroker.KycSyncRequested`, `KycSessionBroker.TokenStored`

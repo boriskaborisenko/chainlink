@@ -1,4 +1,4 @@
-module passstore/cre_go
+module passstore/don_files_go
 
 go 1.22
 

@@ -9,11 +9,11 @@ import (
 	"strings"
 	"time"
 
-	"passstore/cre_go/internal/config"
-	"passstore/cre_go/internal/cryptobox"
-	"passstore/cre_go/internal/eth"
-	"passstore/cre_go/internal/state"
-	"passstore/cre_go/internal/sumsub"
+	"passstore/don_files_go/internal/config"
+	"passstore/don_files_go/internal/cryptobox"
+	"passstore/don_files_go/internal/eth"
+	"passstore/don_files_go/internal/state"
+	"passstore/don_files_go/internal/sumsub"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -48,7 +48,7 @@ func main() {
 		return
 	}
 
-	log.Printf("Unified CRE_GO worker started with issueInterval=%dms syncInterval=%dms", cfg.PollIntervalMS, cfg.SyncPollIntervalMS)
+	log.Printf("Unified GO worker started with issueInterval=%dms syncInterval=%dms", cfg.PollIntervalMS, cfg.SyncPollIntervalMS)
 	lastSyncAt := time.Time{}
 
 	for {

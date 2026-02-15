@@ -14,6 +14,7 @@ contracts/typechain-types
 contracts/.check
 contracts/.home
 contracts/.xdg
-CRE_GO/.gocache
-CRE_GO/.gomodcache
-CRE_GO/.gopath
+DON_FILES/GO/.gocache
+DON_FILES/GO/.gomodcache
+DON_FILES/GO/.gopath
+run_ngrok_frontend.sh

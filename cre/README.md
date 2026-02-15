@@ -6,7 +6,7 @@ This package acts as the no-backend server role for Sumsub integration.
 
 - `UnifiedWorker` (`src/workflows/worker.ts`)
   - Pass A: watches `KycSessionBroker.KycRequested`, creates Sumsub SDK token, encrypts it for user session key, stores ciphertext onchain.
-  - Pass B: polls Sumsub review status for known users and updates `PassRegistry`:
+  - Pass B: watches `KycSessionBroker.KycSyncRequested`, fetches Sumsub review status for requested user, and updates `PassRegistry`:
     - `GREEN` -> `attest(...)`
     - `RED` -> `revoke(...)`
     - `PENDING` -> no write
@@ -15,7 +15,7 @@ This package acts as the no-backend server role for Sumsub integration.
 
 1. Copy `.env.example` to `.env` and fill contract addresses + Sumsub credentials.
    - `POLL_INTERVAL_MS` controls how fast `KycRequested` events are picked up (recommended `5000` for local demo).
-   - `SYNC_POLL_INTERVAL_MS` controls how often Sumsub statuses are synced (recommended `30000-120000`).
+   - `SYNC_POLL_INTERVAL_MS` is kept for compatibility (current sync flow is event-driven by `KycSyncRequested`).
 2. Start single worker:
 
 ```bash

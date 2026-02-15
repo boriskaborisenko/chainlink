@@ -75,4 +75,28 @@ describe("PassStore MVP", function () {
 
     await expect(accessPass.connect(user).mint()).to.be.revertedWithCustomError(accessPass, "NotEligible");
   });
+
+  it("requests on-demand KYC sync with cooldown", async () => {
+    const { user, broker } = await deployFixture();
+
+    await (await broker.connect(user).setEncryptionPubKey("0x11223344")).wait();
+    await (await broker.connect(user).requestKyc("basic-kyc")).wait();
+
+    await expect(broker.connect(user).requestKycSync()).to.emit(broker, "KycSyncRequested");
+
+    await expect(broker.connect(user).requestKycSync()).to.be.revertedWith("KycSessionBroker: sync cooldown");
+
+    await ethers.provider.send("evm_increaseTime", [61]);
+    await ethers.provider.send("evm_mine", []);
+
+    await expect(broker.connect(user).requestKycSync()).to.emit(broker, "KycSyncRequested");
+  });
+
+  it("emits world id verification request event", async () => {
+    const { user, broker } = await deployFixture();
+
+    await expect(
+      broker.connect(user).requestWorldIdVerification("proof-data", "root-data", "nullifier-data", "device")
+    ).to.emit(broker, "WorldIdVerificationRequested");
+  });
 });

@@ -7,7 +7,7 @@ import (
 	"math/big"
 	"strings"
 
-	"passstore/cre_go/internal/config"
+	"passstore/don_files_go/internal/config"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
