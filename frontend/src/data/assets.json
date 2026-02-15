@@ -1,0 +1,102 @@
+{
+  "assets": [
+    {
+      "chainId": 11155111,
+      "tokenId": 101,
+      "name": "Villa",
+      "subname": "Private Estate",
+      "description": "Coastal villa with private gardens, fractionalized into onchain units.",
+      "category": "Real Estate",
+      "healthScore": 75,
+      "priceUSDx": 40,
+      "supplyForDemo": 500000,
+      "apr": false,
+      "requirement": "both",
+      "image": "/assets/Villa.avif"
+    },
+    {
+      "chainId": 80002,
+      "tokenId": 201,
+      "name": "Van Gogh Painting",
+      "subname": "Post-Impressionist Masterpiece",
+      "description": "Museum-grade artwork with provenance, issued as a tradable digital share.",
+      "category": "Art",
+      "healthScore": 95,
+      "priceUSDx": 20,
+      "supplyForDemo": 1000000,
+      "apr": false,
+      "requirement": "worldid",
+      "image": "/assets/VanGoghPainting.avif"
+    },
+    {
+      "chainId": 97,
+      "tokenId": 303,
+      "name": "Supply Chain Fin",
+      "subname": "Clearpool",
+      "description": "Tokenized demo note for private credit exposure; yield-bearing.",
+      "category": "Private Credit",
+      "healthScore": 50,
+      "priceUSDx": 100,
+      "supplyForDemo": 25000,
+      "apr": 12.2,
+      "requirement": "kyc",
+      "image": "/assets/SupplyChainFin.avif"
+    },
+    {
+      "chainId": 80002,
+      "tokenId": 211,
+      "name": "RE Bridge Loan",
+      "subname": "Maple Fin",
+      "description": "Tokenized demo note for bridge-loan credit exposure on Ethereum.",
+      "category": "Private Credit",
+      "healthScore": 45,
+      "priceUSDx": 100,
+      "supplyForDemo": 34000,
+      "apr": 11.5,
+      "requirement": "both",
+      "image": "/assets/REBridgeLoan.avif"
+    },
+    {
+      "chainId": 97,
+      "tokenId": 305,
+      "name": "Anthropic Ser G",
+      "subname": "Forge",
+      "description": "Tokenized demo allocation for private equity style exposure.",
+      "category": "Private Equity",
+      "healthScore": 82,
+      "priceUSDx": 100,
+      "supplyForDemo": 150000,
+      "apr": false,
+      "requirement": "worldid",
+      "image": "/assets/AnthropicSerG.avif"
+    },
+    {
+      "chainId": 80002,
+      "tokenId": 208,
+      "name": "Gold Bullion (LBMA)",
+      "subname": "PAXOS",
+      "description": "Tokenized commodity-style exposure tracking LBMA gold.",
+      "category": "Commodities",
+      "healthScore": 12,
+      "priceUSDx": 1000,
+      "supplyForDemo": 2350,
+      "apr": false,
+      "requirement": "none",
+      "image": "/assets/GoldBullion(LBMA).avif"
+    },
+    {
+      "chainId": 80002,
+      "tokenId": 221,
+      "name": "Franklin MMF",
+      "subname": "Franklin Temp",
+      "description": "Tokenized demo fund unit for money-market style exposure.",
+      "category": "Fund",
+      "healthScore": 8,
+      "priceUSDx": 1,
+      "supplyForDemo": 850000000,
+      "apr": 5.1,
+      "requirement": "kyc",
+      "image": "/assets/FranklinMMF.avif"
+    }
+  ]
+}

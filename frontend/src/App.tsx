@@ -8,6 +8,9 @@ import { accessPassAbi } from "./abi/accessPass";
 import { claimDropAbi } from "./abi/claimDrop";
 import { env } from "./lib/env";
 import { decryptSessionCiphertextHex, generateSessionKeyPairHex } from "./lib/sessionCrypto";
+import assetsData from "./data/assets.json";
+
+const assetImages = import.meta.glob("./assets/*", { eager: true, import: "default" }) as Record<string, string>;
 
 type VerifySnapshot = {
   ok: boolean;
@@ -55,6 +58,64 @@ type SumsubStatusSnapshot = {
   reviewStatus: string;
   reviewAnswer: string;
 };
+
+type AssetRule = "none" | "kyc" | "worldid" | "both";
+
+type DemoNetwork = {
+  chainId: number;
+  name: string;
+  explorer: string;
+  faucet: string;
+};
+
+type DemoAsset = {
+  chainId: number;
+  tokenId: number;
+  name: string;
+  subname: string;
+  description: string;
+  category: string;
+  healthScore: number;
+  priceUSDx: number;
+  supplyForDemo: number;
+  apr?: number | false;
+  requirement: AssetRule;
+  image: string;
+};
+
+const DEMO_NETWORKS: DemoNetwork[] = [
+  {
+    chainId: 11155111,
+    name: "Sepolia",
+    explorer: "https://sepolia.etherscan.io",
+    faucet: "https://cloud.google.com/application/web3/faucet/ethereum/sepolia"
+  },
+  {
+    chainId: 80002,
+    name: "Amoy",
+    explorer: "https://amoy.polygonscan.com",
+    faucet: "https://faucet.stakepool.dev.br/amoy"
+  },
+  {
+    chainId: 97,
+    name: "BSC Testnet",
+    explorer: "https://testnet.bscscan.com",
+    faucet: "https://www.bnbchain.org/en/testnet-faucet"
+  }
+];
+
+const DEMO_ASSETS: DemoAsset[] = assetsData.assets as DemoAsset[];
+const DEMO_VERIFICATION_EXPIRES = "2026-08-12";
+
+function resolveAssetImage(imagePath: string): string {
+  const filename = imagePath.split("/").pop();
+  if (!filename) {
+    return imagePath;
+  }
+
+  const entry = Object.entries(assetImages).find(([path]) => path.endsWith(`/${filename}`));
+  return entry ? entry[1] : imagePath;
+}
 
 function getSimpleProgressCopy(
   status: string,
@@ -241,6 +302,7 @@ export default function App() {
   const [sumsubModalOpen, setSumsubModalOpen] = useState<boolean>(false);
   const [worldIdVerified, setWorldIdVerified] = useState<boolean>(false);
   const [worldIdErrorCode, setWorldIdErrorCode] = useState<string>("");
+  const [purchasedAssets, setPurchasedAssets] = useState<Record<number, boolean>>({});
   const [simpleActionKind, setSimpleActionKind] = useState<SimpleActionKind | null>(null);
   const [simpleResultModal, setSimpleResultModal] = useState<SimpleResultModal | null>(null);
   const { open } = useAppKit();
@@ -836,13 +898,18 @@ export default function App() {
 
     const decryptedToken = decryptSessionCiphertextHex(packet.ciphertextHex, activeSecretKeyHex);
     const preview = `${decryptedToken.slice(0, 8)}...${decryptedToken.slice(-6)}`;
+    const isMockToken = decryptedToken.startsWith("mock-sdk-");
 
     setSdkTokenPreview(preview);
     setPendingDecrypt(null);
-    setStatus(`SDK token decrypted (expiresAt=${packet.expiresAt}), launching Sumsub...`);
-
-    launchSumsub(decryptedToken);
-    setStatus("Sumsub started automatically. Complete verification flow, then press Sync + refresh status.");
+    if (isMockToken) {
+      setSumsubModalOpen(false);
+      setStatus("Demo mode: KYC mock accepted. Press Sync + refresh status to get onchain GREEN.");
+    } else {
+      setStatus(`SDK token decrypted (expiresAt=${packet.expiresAt}), launching Sumsub...`);
+      launchSumsub(decryptedToken);
+      setStatus("Sumsub started automatically. Complete verification flow, then press Sync + refresh status.");
+    }
     await refreshOnchainData(packet.owner);
   }
 
@@ -1140,6 +1207,87 @@ export default function App() {
     }
   }
 
+  function isRuleSatisfied(rule: AssetRule): boolean {
+    if (rule === "none") {
+      return true;
+    }
+    if (rule === "kyc") {
+      return verify.ok;
+    }
+    if (rule === "worldid") {
+      return worldIdVerified;
+    }
+    return verify.ok && worldIdVerified;
+  }
+
+  function ruleLabel(rule: AssetRule): string {
+    if (rule === "none") {
+      return "No verification needed";
+    }
+    if (rule === "kyc") {
+      return "Requires KYC";
+    }
+    if (rule === "worldid") {
+      return "Requires World ID";
+    }
+    return "Requires KYC + World ID";
+  }
+
+  function lockHint(rule: AssetRule): string {
+    if (rule === "none") {
+      return "";
+    }
+    if (rule === "kyc" && !verify.ok) {
+      return "Complete KYC first";
+    }
+    if (rule === "worldid" && !worldIdVerified) {
+      return "Complete World ID first";
+    }
+    if (rule === "both") {
+      if (!verify.ok && !worldIdVerified) {
+        return "Complete KYC and World ID";
+      }
+      if (!verify.ok) {
+        return "Complete KYC first";
+      }
+      if (!worldIdVerified) {
+        return "Complete World ID first";
+      }
+    }
+    return "";
+  }
+
+  function chainName(chainIdValue: number): string {
+    const network = DEMO_NETWORKS.find((entry) => entry.chainId === chainIdValue);
+    return network ? network.name : `Chain ${chainIdValue}`;
+  }
+
+  function assetStatusLabel(asset: DemoAsset): string {
+    if (purchasedAssets[asset.tokenId]) {
+      return "Purchased";
+    }
+    return isRuleSatisfied(asset.requirement) ? "Available" : "Locked";
+  }
+
+  async function buyDemoAsset(asset: DemoAsset): Promise<void> {
+    if (!account) {
+      setError("Connect wallet first");
+      return;
+    }
+    if (networkMismatch) {
+      setError(`Wrong network: expected chainId ${env.chainId}, got ${chainId}`);
+      return;
+    }
+    if (!isRuleSatisfied(asset.requirement)) {
+      setError(lockHint(asset.requirement) || "Verification is required");
+      return;
+    }
+
+    setError("");
+    setPurchasedAssets((previous) => ({ ...previous, [asset.tokenId]: true }));
+    setStatus(`${asset.name} purchased (demo).`);
+  }
+
   const expectedChainId = env.chainId || 0;
   const networkMismatch = chainId > 0 && expectedChainId > 0 && chainId !== expectedChainId;
   const worldIdConfigured = Boolean(env.worldIdAppId && env.worldIdAction);
@@ -1147,14 +1295,18 @@ export default function App() {
   const connectButtonLabel = isAppKitConnected ? "Connected!" : "Connect wallet";
   const simpleBusy = waitingPacket || refreshingStatus || syncWaiting || (busy && simpleActionKind !== null);
   const simpleProgress = getSimpleProgressCopy(status, waitingPacket, refreshingStatus, syncWaiting);
-  const simpleVerificationLabel = verify.ok ? "Verified" : hasSdkToken ? "Review in progress" : "Not verified yet";
   const worldIdVerificationLevel = parseWorldIdVerificationLevel(env.worldIdVerificationLevel);
   const worldIdPrecheckMode = parseWorldIdPrecheckMode(env.worldIdPrecheckMode);
-  const simpleNetworkLabel = networkMismatch ? `Wrong network (${chainId})` : `Network ${expectedChainId || "-"}`;
-  const attestationExpirationLabel =
-    attestation && attestation.expiration > 0 ? new Date(attestation.expiration * 1000).toISOString().slice(0, 10) : "-";
-  const accessAssetStatus = verify.ok ? (hasMinted ? "Minted" : "Available") : "Locked";
-  const claimAssetStatus = verify.ok ? (hasClaimed ? "Claimed" : "Available") : "Locked";
+  const walletTopLabel = account ? shortAddress(account) : "Wallet not connected";
+  const kycStatusLabel = verify.ok ? "KYC: verified" : hasSdkToken ? "KYC: in progress" : "KYC: pending";
+  const worldIdStatusLabel = worldIdVerified ? "World ID: verified" : "World ID: pending";
+  const attestationFlags = attestation ? Number(attestation.flags) : 0;
+  const hasKycFlag = (attestationFlags & 1) === 1;
+  const hasWorldIdFlag = (attestationFlags & 2) === 2;
+  const unlockedAssetsCount = DEMO_ASSETS.filter((asset) => isRuleSatisfied(asset.requirement)).length;
+  const kycOnlyUnlocked = verify.ok;
+  const worldIdOnlyUnlocked = worldIdVerified;
+  const combinedUnlocked = verify.ok && worldIdVerified;
 
   return (
     <div className="page page-simple">
@@ -1169,13 +1321,7 @@ export default function App() {
               <span className={`wallet-dot ${isAppKitConnected ? "on" : "off"}`} />
               <span>{connectButtonLabel}</span>
             </button>
-            <button
-              className="top-action-btn"
-              onClick={refreshStatusFromSimple}
-              disabled={busy || !account || networkMismatch || waitingPacket}
-            >
-              {refreshingStatus ? "Checking..." : "Check status"}
-            </button>
+            <span className={`top-account-pill ${account ? "" : "muted"}`}>{walletTopLabel}</span>
             <span className={`chain-id-text ${networkMismatch ? "warn" : ""}`}>Chain {chainId || expectedChainId || "-"}</span>
             <span className={`pill ${verify.ok ? "ok" : "warn"}`}>{verify.ok ? "Policy pass" : "Policy blocked"}</span>
           </div>
@@ -1184,125 +1330,215 @@ export default function App() {
         <div className="hero-main-row">
           <div className="hero-main-copy">
             <h1>
-              PassStore <span>+ Sumsub</span>
+              PassStore <span>+ Sumsub + World ID</span>
             </h1>
-            <p>No backend. Encrypted SDK token delivery via CRE and policy-gated onchain access.</p>
+            <p>No backend. Encrypted SDK token delivery via CRE, World ID proof flow, and policy-gated onchain access.</p>
           </div>
-          {!verify.ok ? (
-            <div className="hero-main-cta">
-              <button
-                className="simple-btn primary hero-cta-btn"
-                onClick={goToKycFromSimple}
-                disabled={busy || !account || networkMismatch || waitingPacket}
-              >
-                Go to KYC
-              </button>
-            </div>
-          ) : null}
         </div>
       </header>
 
       <div className="simple-layout reveal">
-        <section className="simple-panel">
-          <h2 className="simple-section-title">Identity Access</h2>
-          <div className="simple-card">
-            <p>{verify.ok ? "You are verified. Protected actions are now available." : "Complete verification to unlock access."}</p>
-            <div className="simple-identity-box">
-              <div className="simple-attestation">
-                <div className="simple-att-item">
-                  <span>Exists</span>
-                  <strong>{String(attestation?.exists ?? false)}</strong>
-                </div>
-                <div className="simple-att-item">
-                  <span>Revoked</span>
-                  <strong>{String(attestation?.revoked ?? false)}</strong>
-                </div>
-                <div className="simple-att-item">
-                  <span>Flags</span>
-                  <strong>{attestation?.flags ?? "0"}</strong>
-                </div>
-                <div className="simple-att-item">
-                  <span>Expires</span>
-                  <strong>{attestationExpirationLabel}</strong>
-                </div>
-                <div className="simple-att-item">
-                  <span>Risk</span>
-                  <strong>{attestation?.riskScore ?? 0}</strong>
-                </div>
-                <div className="simple-att-item">
-                  <span>Subject</span>
-                  <strong>{attestation?.subjectType ?? 0}</strong>
-                </div>
+        <section className="simple-panel simple-identity-panel">
+          <h2 className="simple-section-title">Verification</h2>
+          <p className="simple-subtitle">Complete KYC and World ID to unlock more assets.</p>
+          {error ? <div className="simple-error">Error: {error}</div> : null}
+
+          <div className="simple-step-card compact">
+            <div className="simple-step-head">
+              <div>
+                <strong>KYC (Sumsub)</strong>
+                <p>{verify.ok ? "Done. Compliance access is unlocked." : "Required for KYC-gated assets."}</p>
               </div>
-              <div className="simple-tags">
-                <span className="simple-tag">{account ? shortAddress(account) : "Wallet not connected"}</span>
-                <span className={`simple-tag ${verify.ok ? "ok" : "warn"}`}>{simpleVerificationLabel}</span>
-                <span className={`simple-tag ${networkMismatch ? "warn" : ""}`}>{simpleNetworkLabel}</span>
-              </div>
+              <span className={`simple-check-badge ${verify.ok ? "ok" : "warn"}`}>{kycStatusLabel}</span>
             </div>
+            {!verify.ok ? (
+              <div className="simple-step-actions">
+                <button
+                  className="simple-btn primary"
+                  onClick={hasSdkToken ? refreshStatusFromSimple : goToKycFromSimple}
+                  disabled={busy || !account || networkMismatch || waitingPacket}
+                >
+                  {hasSdkToken ? (refreshingStatus ? "Syncing..." : "KYC") : "KYC"}
+                </button>
+              </div>
+            ) : null}
           </div>
 
-          {error ? <div className="simple-error">Error: {error}</div> : null}
-          {sumsubModalOpen ? <p className="simple-note">Verification form is open. Complete it and then press Check status.</p> : null}
-          {worldIdConfigured ? (
-            <div className="simple-worldid-row">
-              <IDKitWidget
-                app_id={env.worldIdAppId as `app_${string}`}
-                action={env.worldIdAction}
-                signal={account.toLowerCase()}
-                verification_level={worldIdVerificationLevel}
-                handleVerify={handleWorldIdVerify}
-                onSuccess={onWorldIdSuccess}
-                onError={onWorldIdError}
-              >
-                {({ open }: { open: () => void }) => (
-                  <button
-                    className={`simple-btn ${worldIdVerified ? "secondary" : "primary"}`}
-                    onClick={open}
-                    disabled={busy || !account || networkMismatch}
+          <div className="simple-step-card compact">
+            <div className="simple-step-head">
+              <div>
+                <strong>World ID</strong>
+                <p>{worldIdVerified ? "Done. Identity-gated access is unlocked." : "Required for World ID-gated assets."}</p>
+              </div>
+              <span className={`simple-check-badge ${worldIdVerified ? "ok" : "warn"}`}>{worldIdStatusLabel}</span>
+            </div>
+            {!worldIdVerified ? (
+              <div className="simple-step-actions">
+                {worldIdConfigured ? (
+                  <IDKitWidget
+                    app_id={env.worldIdAppId as `app_${string}`}
+                    action={env.worldIdAction}
+                    signal={account.toLowerCase()}
+                    verification_level={worldIdVerificationLevel}
+                    handleVerify={handleWorldIdVerify}
+                    onSuccess={onWorldIdSuccess}
+                    onError={onWorldIdError}
                   >
-                    {worldIdVerified ? "World ID verified" : "Verify with World ID"}
+                    {({ open }: { open: () => void }) => (
+                      <button className="simple-btn primary" onClick={open} disabled={busy || !account || networkMismatch}>
+                        Start World ID
+                      </button>
+                    )}
+                  </IDKitWidget>
+                ) : (
+                  <button className="simple-btn primary" disabled>
+                    World ID
                   </button>
                 )}
-              </IDKitWidget>
-              <span className={`simple-worldid-badge ${worldIdVerified ? "ok" : "warn"}`}>
-                {worldIdVerified ? "World ID: linked" : "World ID: pending"}
-              </span>
-            </div>
-          ) : null}
-          {worldIdErrorCode ? <p className="simple-note">World ID error code: {worldIdErrorCode}</p> : null}
-        </section>
-        <section className="simple-panel simple-assets-panel">
-          <h2>Available assets</h2>
-          <p>Demo has 2 gated assets.</p>
-          <div className="simple-asset-row">
-            <div className="simple-asset-meta">
-              <span>AccessPass</span>
-              <strong>{accessAssetStatus}</strong>
-            </div>
-            <button
-              className="simple-asset-btn"
-              onClick={mintAccessPass}
-              disabled={busy || !account || networkMismatch || !verify.ok || hasMinted}
-            >
-              {hasMinted ? "Received" : "Get"}
-            </button>
+              </div>
+            ) : null}
+            {!worldIdConfigured ? (
+              <p className="simple-note">
+                World ID is not configured in env for this build. Set `VITE_WORLD_ID_APP_ID` and `VITE_WORLD_ID_ACTION`.
+              </p>
+            ) : null}
+            <p className="simple-note">
+              World ID note: simulator is fine for demo/dev. Real mobile production flow may require Orb verification.{" "}
+              <a href="https://world.org/orb" target="_blank" rel="noreferrer">
+                Orb locations
+              </a>
+            </p>
+            {worldIdErrorCode ? <p className="simple-note">World ID error code: {worldIdErrorCode}</p> : null}
           </div>
-          <div className="simple-asset-row">
-            <div className="simple-asset-meta">
-              <span>ClaimDrop</span>
-              <strong>{claimAssetStatus}</strong>
-            </div>
-            <button
-              className="simple-asset-btn"
-              onClick={claimDrop}
-              disabled={busy || !account || networkMismatch || !verify.ok || hasClaimed}
-            >
-              {hasClaimed ? "Claimed" : "Claim"}
-            </button>
+        </section>
+
+        <section className="simple-panel simple-unlock-panel">
+          <h2 className="simple-section-title">Access Progress</h2>
+          <p className="simple-subtitle">Status updates automatically after each verification step.</p>
+          <div className="unlock-list">
+            <article className="unlock-item">
+              <div>
+                <strong>KYC-only assets</strong>
+                <p>Unlocks assets that require only KYC.</p>
+              </div>
+              <span className={`simple-check-badge ${kycOnlyUnlocked ? "ok" : "warn"}`}>{kycOnlyUnlocked ? "Unlocked" : "Locked"}</span>
+            </article>
+            <article className="unlock-item">
+              <div>
+                <strong>World ID-only assets</strong>
+                <p>Unlocks assets that require only World ID.</p>
+              </div>
+              <span className={`simple-check-badge ${worldIdOnlyUnlocked ? "ok" : "warn"}`}>
+                {worldIdOnlyUnlocked ? "Unlocked" : "Locked"}
+              </span>
+            </article>
+            <article className="unlock-item">
+              <div>
+                <strong>Dual-gated assets</strong>
+                <p>Require both KYC and World ID.</p>
+              </div>
+              <span className={`simple-check-badge ${combinedUnlocked ? "ok" : "warn"}`}>{combinedUnlocked ? "Unlocked" : "Locked"}</span>
+            </article>
+          </div>
+          <div className="simple-status-summary">
+            <span>Available now</span>
+            <strong>
+              {unlockedAssetsCount}/{DEMO_ASSETS.length} assets
+            </strong>
           </div>
         </section>
       </div>
+
+      <section className="simple-panel simple-assets-panel reveal">
+          <h2>Assets Marketplace</h2>
+          <p>Cards are clickable and unlock automatically after required verification.</p>
+          <div className="simple-assets-grid">
+            {DEMO_ASSETS.map((asset) => {
+              const unlocked = isRuleSatisfied(asset.requirement);
+              const purchased = Boolean(purchasedAssets[asset.tokenId]);
+              const statusLabel = assetStatusLabel(asset);
+
+              return (
+                <article key={asset.tokenId} className={`asset-card ${unlocked ? "unlocked" : "locked"}`}>
+                  <img className="asset-image" src={resolveAssetImage(asset.image)} alt={asset.name} />
+                  <div className="asset-card-head">
+                    <div>
+                      <h3>{asset.name}</h3>
+                      <p>{asset.subname}</p>
+                    </div>
+                    <span className={`asset-status ${unlocked ? "ok" : "warn"}`}>{statusLabel}</span>
+                  </div>
+                  <p className="asset-description">{asset.description}</p>
+                  <div className="asset-tags">
+                    <span>{asset.category}</span>
+                    <span>Chain {asset.chainId}</span>
+                    <span>{chainName(asset.chainId)}</span>
+                  </div>
+                  <div className="asset-metrics">
+                    <div>
+                      <span>Price</span>
+                      <strong>${asset.priceUSDx}</strong>
+                    </div>
+                    <div>
+                      <span>Health</span>
+                      <strong>{asset.healthScore}</strong>
+                    </div>
+                    <div>
+                      <span>APR</span>
+                      <strong>{typeof asset.apr === "number" ? `${asset.apr}%` : "N/A"}</strong>
+                    </div>
+                    <div>
+                      <span>Supply</span>
+                      <strong>{asset.supplyForDemo.toLocaleString()}</strong>
+                    </div>
+                  </div>
+                  <div className="asset-card-actions">
+                    <span className="asset-requirement">{ruleLabel(asset.requirement)}</span>
+                    <button className="simple-btn primary" onClick={() => void buyDemoAsset(asset)} disabled={busy || purchased || !unlocked}>
+                      {purchased ? "Owned" : unlocked ? "Buy" : "Locked"}
+                    </button>
+                  </div>
+                  <p className="asset-expire">Verification expires: {DEMO_VERIFICATION_EXPIRES}</p>
+                  <div className="asset-flag-row">
+                    {asset.requirement === "none" ? <span className="simple-check-badge ok">available</span> : null}
+                    {asset.requirement === "kyc" ? <span className={`simple-check-badge ${verify.ok ? "ok" : "warn"}`}>KYC</span> : null}
+                    {asset.requirement === "worldid" ? (
+                      <span className={`simple-check-badge ${worldIdVerified ? "ok" : "warn"}`}>World ID</span>
+                    ) : null}
+                    {asset.requirement === "both" ? (
+                      <>
+                        <span className={`simple-check-badge ${verify.ok ? "ok" : "warn"}`}>KYC</span>
+                        <span className={`simple-check-badge ${worldIdVerified ? "ok" : "warn"}`}>World ID</span>
+                      </>
+                    ) : null}
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+      </section>
+
+      <section className="simple-panel networks-panel reveal">
+          <h2>Supported Networks</h2>
+          <p>Demo assets are distributed across testnets.</p>
+          <div className="network-grid">
+            {DEMO_NETWORKS.map((network) => (
+              <article key={network.chainId} className="network-card">
+                <strong>
+                  {network.name} ({network.chainId})
+                </strong>
+                <div className="network-links">
+                  <a href={network.explorer} target="_blank" rel="noreferrer">
+                    Explorer
+                  </a>
+                  <a href={network.faucet} target="_blank" rel="noreferrer">
+                    Faucet
+                  </a>
+                </div>
+              </article>
+            ))}
+          </div>
+      </section>
 
       {simpleBusy ? (
         <div className="simple-loading-backdrop">
