@@ -212,6 +212,18 @@ h3 {
   background: rgba(31, 29, 50, 0.6);
 }
 
+.error-top {
+  margin: 0.25rem 0 0.7rem;
+  border: 1px solid #703445;
+  border-radius: 12px;
+  padding: 0.58rem;
+  background: var(--err-bg);
+  color: var(--err-ink);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+
 .steps {
   margin-top: 0.55rem;
   display: grid;
@@ -399,18 +411,6 @@ h3 {
   font-family: "JetBrains Mono", monospace;
   font-size: 0.8rem;
   background: rgba(34, 30, 56, 0.92);
-}
-
-.error {
-  margin-top: 0.7rem;
-  border: 1px solid #703445;
-  border-radius: 12px;
-  padding: 0.58rem;
-  background: var(--err-bg);
-  color: var(--err-ink);
-  font-family: "JetBrains Mono", monospace;
-  font-size: 0.8rem;
-  overflow-wrap: anywhere;
 }
 
 .sumsub {

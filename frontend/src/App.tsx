@@ -502,6 +502,11 @@ export default function App() {
               {networkMismatch ? `Wrong network (${chainId})` : `Chain ${chainId || "-"}`}
             </span>
           </div>
+          {error ? (
+            <div className="error-top">
+              <strong>Issue:</strong> {error}
+            </div>
+          ) : null}
 
           <div className="flow-block">
             <h3>Sequence</h3>
@@ -602,7 +607,6 @@ export default function App() {
           </div>
 
           <div className="status-box">Status: {status}</div>
-          {error ? <div className="error">Error: {error}</div> : null}
           <div id="sumsub-websdk-container" className="sumsub" />
         </section>
 
